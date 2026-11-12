@@ -141,8 +141,11 @@ object WebhookClient {
         staticQrisString: String
     ): QrisUpdateResult {
         val baseUrl = ConfigStore.deriveBaseUrl(webhookUrl)
-        if (baseUrl.isBlank() || apiKey.isBlank()) {
-            return QrisUpdateResult(false, "Webhook URL atau API Key belum diisi")
+        if (baseUrl.isBlank()) {
+            return QrisUpdateResult(false, "Webhook URL di tab Setting masih kosong")
+        }
+        if (apiKey.isBlank()) {
+            return QrisUpdateResult(false, "API Key Admin masih kosong")
         }
 
         val payload = JSONObject().apply {

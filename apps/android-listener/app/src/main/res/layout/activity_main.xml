@@ -600,43 +600,87 @@
                     android:background="@drawable/bg_card"
                     android:orientation="vertical">
 
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="1. Webhook URL Worker (/v1/webhook/mutation)"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#141A12" />
+
                     <EditText
                         android:id="@+id/etWebhookUrl"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="Webhook URL (/v1/webhook/mutation)"
+                        android:hint="https://.../v1/webhook/mutation"
                         android:inputType="textUri"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="2. Webhook Sukses Toko (Default Callback URL, opsional)"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#141A12" />
 
                     <EditText
                         android:id="@+id/etCallbackUrl"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="Webhook Sukses Toko (Default Callback URL)"
+                        android:hint="https://toko-kamu.com/api/webhook/remote-qris"
                         android:inputType="textUri"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="3. Webhook Secret (qris_hook_...)"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#141A12" />
 
                     <EditText
                         android:id="@+id/etSecret"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="Webhook Secret (x-gateway-secret)"
-                        android:inputType="textPassword"
+                        android:hint="qris_hook_..."
+                        android:inputType="textVisiblePassword"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="4. API Key Admin (qris_api_...)"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#141A12" />
 
                     <EditText
                         android:id="@+id/etApiKey"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="API Key Admin (untuk Riwayat, QRIS, &amp; Callback)"
-                        android:inputType="textPassword"
+                        android:hint="qris_api_..."
+                        android:inputType="textVisiblePassword"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="5. Device ID"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#141A12" />
 
                     <EditText
                         android:id="@+id/etDeviceId"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="Device ID"
+                        android:hint="android-sm-m236b"
                         android:textSize="12sp" />
 
                     <Button

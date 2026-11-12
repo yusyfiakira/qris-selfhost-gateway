@@ -894,6 +894,10 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Update ke Server") { _, _ ->
                 val apiKey = etAdminKey.text.toString().trim()
                 val rawQris = etQrisRaw.text.toString().trim()
+                if (apiKey.isNotBlank()) {
+                    etApiKey.setText(apiKey)
+                    saveFormToConfig()
+                }
                 val cfg = ConfigStore.load(this)
                 ioExecutor.execute {
                     val res = WebhookClient.updateStaticQris(

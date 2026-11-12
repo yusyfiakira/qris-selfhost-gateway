@@ -52,17 +52,27 @@ object ConfigStore {
         "com.shopeepay.merchant.id, com.gojek.gopaymerchant, com.gojek.resto, id.dana, com.bca.merchantbca, id.co.bankmandiri.livinmerchant, id.co.bri.merchant"
     private const val DEFAULT_EXCLUDE_KW = "promo, cashback, diskon, voucher"
 
+    @Volatile
+    private var cachedPrefs: SharedPreferences? = null
+
     private fun prefs(context: Context): SharedPreferences {
-        val masterKey = MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            context.applicationContext,
-            PREF_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        cachedPrefs?.let { return it }
+        synchronized(this) {
+            cachedPrefs?.let { return it }
+            val appCtx = context.applicationContext
+            val masterKey = MasterKey.Builder(appCtx)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            val created = EncryptedSharedPreferences.create(
+                appCtx,
+                PREF_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+            cachedPrefs = created
+            return created
+        }
     }
 
     fun load(context: Context): ListenerConfig {
@@ -128,7 +138,7 @@ object ConfigStore {
         if (defaultExpiryMinutes != null) {
             editor.putInt(KEY_DEFAULT_EXPIRY, defaultExpiryMinutes.coerceIn(1, 1440))
         }
-        editor.apply()
+        editor.commit()
     }
 
     fun exportToJson(context: Context, includeSecret: Boolean): String {

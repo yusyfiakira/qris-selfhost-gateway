@@ -29,6 +29,8 @@ const MAX_EXPIRY_MINUTES = 1440; // 24 jam
 const MAX_UNIQUE_CODE_LIMIT = 999;
 const CALLBACK_RETRY_DELAYS_MINUTES = [1, 2, 5, 10, 30];
 const SETTING_STATIC_QRIS = 'static_qris_string';
+const SETTING_DEFAULT_CALLBACK = 'default_callback_url';
+const SETTING_DEFAULT_EXPIRY = 'default_expiry_minutes';
 
 export const app = new Hono<{ Bindings: EnvBindings }>();
 
@@ -111,6 +113,42 @@ async function resolveActiveStaticQris(
     return { qrisString: fromEnv, source: 'env' };
   }
   return { qrisString: '', source: 'none' };
+}
+
+async function resolveDefaultCallbackUrl(env: EnvBindings): Promise<string | null> {
+  if (env.DB) {
+    try {
+      const row = await env.DB.prepare(
+        'SELECT value FROM gateway_settings WHERE key = ? LIMIT 1'
+      )
+        .bind(SETTING_DEFAULT_CALLBACK)
+        .first<{ value: string }>();
+      if (row?.value !== undefined && row?.value !== null) {
+        const clean = String(row.value).trim();
+        return clean || null;
+      }
+    } catch {}
+  }
+  const fromEnv = String(env.DEFAULT_CALLBACK_URL || '').trim();
+  return fromEnv || null;
+}
+
+async function resolveDefaultExpiryMinutes(env: EnvBindings): Promise<number> {
+  if (env.DB) {
+    try {
+      const row = await env.DB.prepare(
+        'SELECT value FROM gateway_settings WHERE key = ? LIMIT 1'
+      )
+        .bind(SETTING_DEFAULT_EXPIRY)
+        .first<{ value: string }>();
+      const num = Number(row?.value);
+      if (Number.isFinite(num) && num >= 1 && num <= MAX_EXPIRY_MINUTES) {
+        return Math.round(num);
+      }
+    } catch {}
+  }
+  const fromEnv = Number(env.DEFAULT_EXPIRY_MINUTES || 15);
+  return Number.isFinite(fromEnv) ? Math.max(1, Math.min(MAX_EXPIRY_MINUTES, Math.round(fromEnv))) : 15;
 }
 
 function getTelegramCfg(env: EnvBindings) {
@@ -342,6 +380,190 @@ app.put('/v1/config/qris', async (c) => {
 });
 
 /**
+ * Mengambil & memperbarui Default Callback URL + Default Expiry (wajib API_KEY).
+ */
+app.get('/v1/config/callback', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const callbackUrl = await resolveDefaultCallbackUrl(c.env);
+  const defaultExpiryMinutes = await resolveDefaultExpiryMinutes(c.env);
+  return c.json({
+    success: true,
+    callbackUrl: callbackUrl || '',
+    defaultExpiryMinutes,
+  });
+});
+
+app.put('/v1/config/callback', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const body = await parseFlexibleBody(c);
+  const rawUrl = String(body.callbackUrl ?? '').trim();
+  if (rawUrl && !/^https?:\/\/.+/i.test(rawUrl)) {
+    return c.json({ success: false, message: 'callbackUrl harus diawali http:// atau https://' }, 400);
+  }
+
+  const nowIso = new Date().toISOString();
+  await c.env.DB.prepare(
+    `INSERT INTO gateway_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  )
+    .bind(SETTING_DEFAULT_CALLBACK, rawUrl, nowIso)
+    .run();
+
+  if (body.defaultExpiryMinutes !== undefined) {
+    const exp = Number(body.defaultExpiryMinutes);
+    if (!Number.isFinite(exp) || exp < 1 || exp > MAX_EXPIRY_MINUTES) {
+      return c.json(
+        { success: false, message: `defaultExpiryMinutes harus antara 1 s/d ${MAX_EXPIRY_MINUTES}` },
+        400
+      );
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO gateway_settings (key, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    )
+      .bind(SETTING_DEFAULT_EXPIRY, String(Math.round(exp)), nowIso)
+      .run();
+  }
+
+  return c.json({
+    success: true,
+    callbackUrl: rawUrl,
+    defaultExpiryMinutes: await resolveDefaultExpiryMinutes(c.env),
+    updatedAt: nowIso,
+  });
+});
+
+app.post('/v1/config/callback/test', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const body = await parseFlexibleBody(c);
+  const targetUrl = String(body.callbackUrl || (await resolveDefaultCallbackUrl(c.env)) || '').trim();
+  if (!targetUrl) {
+    return c.json({ success: false, message: 'Callback URL belum dikonfigurasi' }, 400);
+  }
+
+  const payload = JSON.stringify({
+    event: 'invoice.test',
+    invoiceId: 'inv_test_ping',
+    externalOrderId: 'TEST-PING',
+    amount: 1000,
+    paidAt: new Date().toISOString(),
+  });
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const signingSecret = String(c.env?.CALLBACK_SIGNING_SECRET || '').trim();
+  if (signingSecret) {
+    headers['x-gateway-signature'] = await signCallbackPayload(payload, signingSecret);
+  }
+
+  try {
+    const res = await fetch(targetUrl, { method: 'POST', headers, body: payload });
+    const text = await res.text().catch(() => '');
+    return c.json({
+      success: res.ok,
+      httpCode: res.status,
+      responsePreview: text.slice(0, 200),
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      httpCode: null,
+      error: err?.message || 'Network error',
+    });
+  }
+});
+
+/**
+ * Daftar invoice + ringkasan omzet untuk dashboard mobile/web (wajib API_KEY).
+ */
+app.get('/v1/invoices', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const statusFilter = String(c.req.query('status') || '').trim().toUpperCase();
+  const minAmount = Number(c.req.query('minAmount') || 0);
+  const maxAmount = Number(c.req.query('maxAmount') || 0);
+  const fromDate = String(c.req.query('from') || '').trim();
+  const toDate = String(c.req.query('to') || '').trim();
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') || 50)));
+
+  const whereParts: string[] = ['1=1'];
+  const params: any[] = [];
+
+  if (statusFilter && ['PENDING', 'PAID', 'EXPIRED', 'CANCELLED'].includes(statusFilter)) {
+    whereParts.push('status = ?');
+    params.push(statusFilter);
+  }
+  if (Number.isFinite(minAmount) && minAmount > 0) {
+    whereParts.push('total_amount >= ?');
+    params.push(Math.round(minAmount));
+  }
+  if (Number.isFinite(maxAmount) && maxAmount > 0) {
+    whereParts.push('total_amount <= ?');
+    params.push(Math.round(maxAmount));
+  }
+  if (fromDate) {
+    whereParts.push('created_at >= ?');
+    params.push(fromDate);
+  }
+  if (toDate) {
+    whereParts.push('created_at <= ?');
+    params.push(toDate);
+  }
+
+  const listQuery = `SELECT * FROM invoices WHERE ${whereParts.join(' AND ')} ORDER BY created_at DESC LIMIT ?`;
+  const rows = await c.env.DB.prepare(listQuery)
+    .bind(...params, limit)
+    .all<any>();
+
+  const nowIso = new Date().toISOString();
+  const todayPrefix = nowIso.slice(0, 10);
+
+  const summaryRow = await c.env.DB.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status = 'PAID' THEN total_amount ELSE 0 END), 0) AS total_paid_amount,
+       COALESCE(SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END), 0) AS total_paid_count,
+       COALESCE(SUM(CASE WHEN status = 'PAID' AND substr(paid_at, 1, 10) = ? THEN total_amount ELSE 0 END), 0) AS today_paid_amount,
+       COALESCE(SUM(CASE WHEN status = 'PAID' AND substr(paid_at, 1, 10) = ? THEN 1 ELSE 0 END), 0) AS today_paid_count,
+       COUNT(*) AS total_invoices
+     FROM invoices`
+  )
+    .bind(todayPrefix, todayPrefix)
+    .first<any>();
+
+  return c.json({
+    success: true,
+    summary: {
+      totalPaidAmount: Number(summaryRow?.total_paid_amount || 0),
+      totalPaidCount: Number(summaryRow?.total_paid_count || 0),
+      todayPaidAmount: Number(summaryRow?.today_paid_amount || 0),
+      todayPaidCount: Number(summaryRow?.today_paid_count || 0),
+      totalInvoices: Number(summaryRow?.total_invoices || 0),
+    },
+    invoices: (rows.results || []).map((row: any) => ({
+      id: row.id,
+      externalOrderId: row.external_order_id,
+      baseAmount: row.base_amount,
+      uniqueCode: row.unique_code,
+      totalAmount: row.total_amount,
+      status: row.status === 'PENDING' && row.expires_at <= nowIso ? 'EXPIRED' : row.status,
+      expiresAt: row.expires_at,
+      paidAt: row.paid_at,
+      createdAt: row.created_at,
+      callbackStatus: row.callback_status || 'NONE',
+      callbackAttempts: Number(row.callback_attempts || 0),
+      callbackHttpCode: row.callback_http_code ?? null,
+    })),
+  });
+});
+
+/**
  * Membuat invoice QRIS dinamis dengan durasi fleksibel (1..1440 menit) & kode unik bebas bentrok.
  */
 app.post('/v1/invoices', async (c) => {
@@ -357,11 +579,12 @@ app.post('/v1/invoices', async (c) => {
   const body = await parseFlexibleBody(c);
   const externalOrderId = String(body.externalOrderId || body.orderId || '').trim();
   const baseAmount = Math.round(Number(body.baseAmount ?? body.amount ?? 0));
-  const rawExpiry = Number(body.expiryMinutes ?? c.env?.DEFAULT_EXPIRY_MINUTES ?? 15);
+  const defaultExpiry = await resolveDefaultExpiryMinutes(c.env);
+  const rawExpiry = Number(body.expiryMinutes ?? defaultExpiry);
   const expiryMinutes = Number.isFinite(rawExpiry)
     ? Math.max(1, Math.min(MAX_EXPIRY_MINUTES, Math.round(rawExpiry)))
-    : 15;
-  const callbackUrl = String(body.callbackUrl || c.env?.DEFAULT_CALLBACK_URL || '').trim() || null;
+    : defaultExpiry;
+  const callbackUrl = String(body.callbackUrl || (await resolveDefaultCallbackUrl(c.env)) || '').trim() || null;
   const metadataJson = body.metadata ? JSON.stringify(body.metadata) : null;
 
   if (!externalOrderId) {

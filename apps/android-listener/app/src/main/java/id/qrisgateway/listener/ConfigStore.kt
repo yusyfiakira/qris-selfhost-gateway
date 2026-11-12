@@ -24,6 +24,9 @@ data class ListenerConfig(
     val webhookUrl: String,
     val heartbeatUrl: String,
     val secret: String,
+    val apiKey: String,
+    val defaultCallbackUrl: String,
+    val defaultExpiryMinutes: Int,
     val deviceId: String,
     val allowedPackages: Set<String>,
     val filterMode: FilterMode,
@@ -36,6 +39,9 @@ object ConfigStore {
     private const val KEY_WEBHOOK_URL = "webhook_url"
     private const val KEY_HEARTBEAT_URL = "heartbeat_url"
     private const val KEY_SECRET = "secret"
+    private const val KEY_API_KEY = "api_key"
+    private const val KEY_CALLBACK_URL = "default_callback_url"
+    private const val KEY_DEFAULT_EXPIRY = "default_expiry_minutes"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_PACKAGES = "allowed_packages"
     private const val KEY_FILTER_MODE = "filter_mode"
@@ -64,6 +70,9 @@ object ConfigStore {
         val webhookUrl = p.getString(KEY_WEBHOOK_URL, "") ?: ""
         val heartbeatUrl = p.getString(KEY_HEARTBEAT_URL, deriveHeartbeatUrl(webhookUrl)) ?: ""
         val secret = p.getString(KEY_SECRET, "") ?: ""
+        val apiKey = p.getString(KEY_API_KEY, "") ?: ""
+        val defaultCallbackUrl = p.getString(KEY_CALLBACK_URL, "") ?: ""
+        val defaultExpiryMinutes = p.getInt(KEY_DEFAULT_EXPIRY, 15).coerceIn(1, 1440)
         val defaultDevice = "android-${Build.MODEL.replace(" ", "-").lowercase()}"
         val deviceId = (p.getString(KEY_DEVICE_ID, defaultDevice) ?: defaultDevice).ifBlank { defaultDevice }
         val rawPackages = p.getString(KEY_PACKAGES, DEFAULT_PACKAGES) ?: DEFAULT_PACKAGES
@@ -75,6 +84,9 @@ object ConfigStore {
             webhookUrl = webhookUrl.trim(),
             heartbeatUrl = heartbeatUrl.trim(),
             secret = secret.trim(),
+            apiKey = apiKey.trim(),
+            defaultCallbackUrl = defaultCallbackUrl.trim(),
+            defaultExpiryMinutes = defaultExpiryMinutes,
             deviceId = deviceId.trim(),
             allowedPackages = parseCsvSet(rawPackages),
             filterMode = filterMode,
@@ -92,13 +104,16 @@ object ConfigStore {
         filterMode: FilterMode = FilterMode.STANDARD_RP,
         rawIncludeKeywords: String = "",
         rawExcludeKeywords: String = DEFAULT_EXCLUDE_KW,
+        apiKey: String? = null,
+        defaultCallbackUrl: String? = null,
+        defaultExpiryMinutes: Int? = null,
         explicitHeartbeatUrl: String? = null
     ) {
         val cleanWebhook = webhookUrl.trim()
         val cleanHeartbeat = explicitHeartbeatUrl?.trim()?.takeIf { it.isNotBlank() }
             ?: deriveHeartbeatUrl(cleanWebhook)
 
-        prefs(context).edit()
+        val editor = prefs(context).edit()
             .putString(KEY_WEBHOOK_URL, cleanWebhook)
             .putString(KEY_HEARTBEAT_URL, cleanHeartbeat)
             .putString(KEY_SECRET, secret.trim())
@@ -107,22 +122,31 @@ object ConfigStore {
             .putString(KEY_FILTER_MODE, filterMode.id)
             .putString(KEY_INCLUDE_KW, rawIncludeKeywords.trim())
             .putString(KEY_EXCLUDE_KW, rawExcludeKeywords.trim())
-            .apply()
+
+        if (apiKey != null) editor.putString(KEY_API_KEY, apiKey.trim())
+        if (defaultCallbackUrl != null) editor.putString(KEY_CALLBACK_URL, defaultCallbackUrl.trim())
+        if (defaultExpiryMinutes != null) {
+            editor.putInt(KEY_DEFAULT_EXPIRY, defaultExpiryMinutes.coerceIn(1, 1440))
+        }
+        editor.apply()
     }
 
     fun exportToJson(context: Context, includeSecret: Boolean): String {
         val cfg = load(context)
         val obj = JSONObject().apply {
-            put("version", 2)
+            put("version", 3)
             put("webhookUrl", cfg.webhookUrl)
             put("heartbeatUrl", cfg.heartbeatUrl)
             put("deviceId", cfg.deviceId)
+            put("defaultCallbackUrl", cfg.defaultCallbackUrl)
+            put("defaultExpiryMinutes", cfg.defaultExpiryMinutes)
             put("allowedPackages", JSONArray(cfg.allowedPackages.toList()))
             put("filterMode", cfg.filterMode.id)
             put("includeKeywords", JSONArray(cfg.includeKeywords))
             put("excludeKeywords", JSONArray(cfg.excludeKeywords))
             if (includeSecret) {
                 put("secret", cfg.secret)
+                if (cfg.apiKey.isNotBlank()) put("apiKey", cfg.apiKey)
             }
         }
         return obj.toString(2)
@@ -135,6 +159,9 @@ object ConfigStore {
         val webhookUrl = obj.optString("webhookUrl", current.webhookUrl)
         val heartbeatUrl = obj.optString("heartbeatUrl", "")
         val secret = obj.optString("secret", "").ifBlank { current.secret }
+        val apiKey = obj.optString("apiKey", "").ifBlank { current.apiKey }
+        val defaultCallbackUrl = obj.optString("defaultCallbackUrl", current.defaultCallbackUrl)
+        val defaultExpiry = obj.optInt("defaultExpiryMinutes", current.defaultExpiryMinutes)
         val deviceId = obj.optString("deviceId", "").ifBlank { current.deviceId }
 
         val pkgArr = obj.optJSONArray("allowedPackages") ?: obj.optJSONArray("recommendedPackages")
@@ -169,17 +196,20 @@ object ConfigStore {
             filterMode = filterMode,
             rawIncludeKeywords = rawInclude,
             rawExcludeKeywords = rawExclude,
+            apiKey = apiKey,
+            defaultCallbackUrl = defaultCallbackUrl,
+            defaultExpiryMinutes = defaultExpiry,
             explicitHeartbeatUrl = heartbeatUrl
         )
     }
 
-    fun deriveQrisConfigUrl(webhookUrl: String): String {
-        val clean = webhookUrl.trim()
+    fun deriveBaseUrl(webhookUrl: String): String {
+        val clean = webhookUrl.trim().trimEnd('/')
         if (clean.isBlank()) return ""
         return if (clean.contains("/v1/webhook/mutation")) {
-            clean.replace("/v1/webhook/mutation", "/v1/config/qris")
+            clean.substringBefore("/v1/webhook/mutation").trimEnd('/')
         } else {
-            "${clean.trimEnd('/')}/v1/config/qris"
+            clean
         }
     }
 
@@ -197,11 +227,7 @@ object ConfigStore {
     }
 
     private fun deriveHeartbeatUrl(webhookUrl: String): String {
-        if (webhookUrl.isBlank()) return ""
-        return if (webhookUrl.contains("/v1/webhook/mutation")) {
-            webhookUrl.replace("/v1/webhook/mutation", "/v1/device/heartbeat")
-        } else {
-            ""
-        }
+        val base = deriveBaseUrl(webhookUrl)
+        return if (base.isBlank()) "" else "$base/v1/device/heartbeat"
     }
 }

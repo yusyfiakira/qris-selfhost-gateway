@@ -3,12 +3,15 @@ package id.qrisgateway.listener
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.net.Uri
+import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
+import com.google.zxing.qrcode.QRCodeWriter
 import java.nio.charset.StandardCharsets
 
 data class QrisPreview(
@@ -19,6 +22,17 @@ data class QrisPreview(
 )
 
 object QrisDecoder {
+
+    fun encodeToBitmap(qrisString: String, sizePx: Int = 640): Bitmap {
+        val matrix = QRCodeWriter().encode(qrisString, BarcodeFormat.QR_CODE, sizePx, sizePx)
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.RGB_565)
+        for (x in 0 until sizePx) {
+            for (y in 0 until sizePx) {
+                bmp.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+            }
+        }
+        return bmp
+    }
 
     fun decodeFromUri(context: Context, uri: Uri): String {
         val stream = context.contentResolver.openInputStream(uri)

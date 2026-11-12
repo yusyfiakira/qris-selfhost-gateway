@@ -255,6 +255,33 @@ test('Worker E2E: durasi 24 jam, cancel membebaskan slot, callback retry, Telegr
     await runScheduledTasks(env, Date.now() + 60_000);
     const afterOfflineCount = telegramAlerts.filter((m) => m.includes('LISTENER ANDROID OFFLINE')).length;
     assert.equal(afterOfflineCount - beforeOfflineCount, 1);
+    // 8. Default Callback URL & Expiry via D1 + GET /v1/invoices summary
+    const cbSaveRes = await app.request(
+      '/v1/config/callback',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer api-key-test-123' },
+        body: JSON.stringify({
+          callbackUrl: 'https://store.example.com/default-hook',
+          defaultExpiryMinutes: 30,
+        }),
+      },
+      env
+    );
+    assert.equal(cbSaveRes.status, 200);
+    const cbSaveJson: any = await cbSaveRes.json();
+    assert.equal(cbSaveJson.callbackUrl, 'https://store.example.com/default-hook');
+    assert.equal(cbSaveJson.defaultExpiryMinutes, 30);
+
+    const invListRes: any = await (
+      await app.request('/v1/invoices?status=PAID', {
+        headers: { Authorization: 'Bearer api-key-test-123' },
+      }, env)
+    ).json();
+    assert.equal(invListRes.success, true);
+    assert.equal(invListRes.summary.totalPaidCount, 1);
+    assert.equal(invListRes.invoices.length, 1);
+    assert.equal(invListRes.invoices[0].id, inv1.data.id);
   } finally {
     globalThis.fetch = origFetch;
   }

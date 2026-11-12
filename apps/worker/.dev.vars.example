@@ -1,0 +1,6 @@
+ENVIRONMENT="development"
+STATIC_QRIS_STRING="PASTE_YOUR_STATIC_MERCHANT_QRIS_STRING_HERE"
+API_KEY="change-me-store-backend-api-key"
+WEBHOOK_SECRET="change-me-listener-webhook-secret"
+CALLBACK_SIGNING_SECRET="change-me-callback-hmac-secret"
+DEFAULT_CALLBACK_URL=""

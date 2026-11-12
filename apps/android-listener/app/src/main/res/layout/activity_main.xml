@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    android:background="#F8FAFC">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="QRIS Self-Hosted Listener"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#0F172A" />
+
+        <TextView
+            android:id="@+id/tvStatusBadge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:padding="10dp"
+            android:background="#E2E8F0"
+            android:text="Status: Memeriksa izin notifikasi..."
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#1E293B" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnGrantNotification"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="6dp"
+                android:text="Izin Notifikasi" />
+
+            <Button
+                android:id="@+id/btnDisableBatteryOpt"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="6dp"
+                android:text="Bebas Baterai" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Webhook URL (/v1/webhook/mutation)"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="#334155" />
+
+        <EditText
+            android:id="@+id/etWebhookUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="https://qris.domainkamu.workers.dev/v1/webhook/mutation"
+            android:inputType="textUri"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Webhook Secret (x-gateway-secret)"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="#334155" />
+
+        <EditText
+            android:id="@+id/etSecret"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Masukkan WEBHOOK_SECRET"
+            android:inputType="textPassword"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Device ID"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="#334155" />
+
+        <EditText
+            android:id="@+id/etDeviceId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="hp-kasir-01"
+            android:inputType="text"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Filter Package Name Merchant (pisahkan koma, kosong = semua yang mengandung Rp)"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="#334155" />
+
+        <EditText
+            android:id="@+id/etPackages"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="com.shopee.partner.id, com.gobiz.app, id.dana"
+            android:inputType="textMultiLine"
+            android:minLines="2"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnSave"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="6dp"
+                android:text="Simpan Config" />
+
+            <Button
+                android:id="@+id/btnImportJson"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="6dp"
+                android:text="Import JSON" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnTestPing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Tes Koneksi Server (Heartbeat + Rp 99.999)" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Log Pengiriman Real-Time"
+                android:textStyle="bold"
+                android:textSize="15sp"
+                android:textColor="#0F172A" />
+
+            <Button
+                android:id="@+id/btnClearLogs"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Bersihkan"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvDeliveryLogs"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:padding="12dp"
+            android:background="#0F172A"
+            android:textColor="#E2E8F0"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:text="Belum ada aktivitas notifikasi." />
+    </LinearLayout>
+</ScrollView>

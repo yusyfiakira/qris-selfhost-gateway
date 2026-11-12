@@ -1,0 +1,22 @@
+{
+  "name": "@qris-selfhost/worker",
+  "version": "0.1.0",
+  "description": "Standalone Cloudflare Workers + D1 self-hosted QRIS Payment Gateway API.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/worker.test.ts"
+  },
+  "dependencies": {
+    "@qris-selfhost/core": "*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250204.0",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "qris-selfhost-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted EMVCo Dynamic QRIS Payment Gateway (MDR 0%) with Cloudflare Workers + D1 & lightweight Kotlin Android Notification Listener.",
+  "workspaces": [
+    "packages/*",
+    "apps/worker"
+  ],
+  "scripts": {
+    "test": "npm --workspace=@qris-selfhost/core test && npm --workspace=@qris-selfhost/worker test",
+    "typecheck": "npm --workspace=@qris-selfhost/core run typecheck && npm --workspace=@qris-selfhost/worker run typecheck",
+    "dev:worker": "npm --workspace=@qris-selfhost/worker run dev"
+  }
+}

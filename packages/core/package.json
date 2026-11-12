@@ -1,0 +1,23 @@
+{
+  "name": "@qris-selfhost/core",
+  "version": "0.1.0",
+  "description": "Zero-dependency EMVCo Dynamic QRIS generator, CRC16 CCITT-FALSE validator, unique code allocator, and Indonesian bank/e-wallet mutation notification parser.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/core.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
+}

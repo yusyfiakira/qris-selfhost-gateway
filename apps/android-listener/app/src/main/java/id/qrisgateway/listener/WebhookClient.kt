@@ -13,6 +13,12 @@ sealed class SendResult {
     data class TransientFailure(val reason: String) : SendResult()
 }
 
+data class QrisUpdateResult(
+    val success: Boolean,
+    val message: String,
+    val merchantName: String? = null
+)
+
 object WebhookClient {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val httpClient = OkHttpClient.Builder()
@@ -74,7 +80,7 @@ object WebhookClient {
 
         val payload = JSONObject().apply {
             put("deviceId", config.deviceId)
-            put("appVersion", "0.1.0")
+            put("appVersion", "0.2.0")
             put("batteryPct", batteryPct)
             put("networkType", networkType)
         }
@@ -89,6 +95,49 @@ object WebhookClient {
             httpClient.newCall(request).execute().use { it.isSuccessful }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    fun updateStaticQris(
+        webhookUrl: String,
+        apiKey: String,
+        deviceId: String,
+        staticQrisString: String
+    ): QrisUpdateResult {
+        val targetUrl = ConfigStore.deriveQrisConfigUrl(webhookUrl)
+        if (targetUrl.isBlank() || apiKey.isBlank()) {
+            return QrisUpdateResult(false, "Webhook URL atau API Key belum diisi")
+        }
+
+        val payload = JSONObject().apply {
+            put("staticQrisString", staticQrisString.trim())
+            put("deviceId", deviceId)
+        }
+
+        val request = Request.Builder()
+            .url(targetUrl)
+            .addHeader("Authorization", "Bearer ${apiKey.trim()}")
+            .put(payload.toString().toRequestBody(jsonMedia))
+            .build()
+
+        return try {
+            httpClient.newCall(request).execute().use { res ->
+                val rawBody = res.body?.string().orEmpty()
+                val json = runCatching { JSONObject(rawBody) }.getOrNull()
+                if (!res.isSuccessful) {
+                    val msg = json?.optString("message")?.takeIf { it.isNotBlank() }
+                        ?: "HTTP ${res.code}"
+                    return QrisUpdateResult(false, msg)
+                }
+                val merchant = json?.optJSONObject("metadata")?.optString("merchantName", "")
+                QrisUpdateResult(
+                    success = true,
+                    message = json?.optString("message", "QRIS diperbarui") ?: "QRIS diperbarui",
+                    merchantName = merchant?.takeIf { it.isNotBlank() }
+                )
+            }
+        } catch (e: Exception) {
+            QrisUpdateResult(false, e.message ?: "Network error")
         }
     }
 }

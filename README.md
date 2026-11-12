@@ -7,8 +7,9 @@ Self-hosted **EMVCo Dynamic QRIS Payment Gateway** (MDR 0%, dana langsung masuk 
 | Workspace / Folder | Deskripsi |
 | --- | --- |
 | [`packages/core`](packages/core) | `@qris-selfhost/core` — Zero-dependency TypeScript SDK (EMVCo TLV, CRC16 CCITT-FALSE, alokasi kode unik, parser notifikasi bank/e-wallet Indonesia). |
-| [`apps/worker`](apps/worker) | `@qris-selfhost/worker` — Standalone API Gateway di Cloudflare Workers + D1 (`POST /v1/invoices`, `GET /v1/invoices/:id`, `POST /v1/webhook/mutation`, heartbeat device, callback HMAC-SHA256). |
-| [`apps/android-listener`](apps/android-listener) | Aplikasi Android ringan (Kotlin native, R8 shrink) dengan `NotificationListenerService`, live delivery log, offline retry queue (`WorkManager`), dan heartbeat ping. |
+| [`apps/worker`](apps/worker) | `@qris-selfhost/worker` — Standalone API Gateway di Cloudflare Workers + D1 (`POST /v1/invoices`, `CANCEL`, `PUT /v1/config/qris`, callback retry Cron, Telegram alert, heartbeat). |
+| [`apps/android-listener`](apps/android-listener) | Aplikasi Android ringan (Kotlin native v0.2) dengan Visual App Picker, 3 mode filter teks + custom keywords, Export/Import JSON, ganti QRIS dari galeri, offline retry (`WorkManager`), dan heartbeat ping. |
+| [`examples/store-adapter.ts`](examples/store-adapter.ts) | Contoh helper client toko & verifikasi HMAC-SHA256 callback `x-gateway-signature`. |
 | [`docs/macrodroid-setup.md`](docs/macrodroid-setup.md) | Panduan alternatif tanpa compile APK menggunakan MacroDroid. |
 
 ## Quickstart (Core SDK & Worker Gateway)
@@ -38,15 +39,22 @@ npm run typecheck
    npx wrangler secret put API_KEY
    npx wrangler secret put WEBHOOK_SECRET
    npx wrangler secret put CALLBACK_SIGNING_SECRET
+   # Opsional untuk notifikasi Telegram sukses, callback gagal, ganti QRIS, & HP offline:
+   npx wrangler secret put TELEGRAM_BOT_TOKEN
+   npx wrangler secret put TELEGRAM_CHAT_ID
    ```
 4. Deploy:
    ```bash
    npx wrangler deploy
    ```
 
-## Alur Kerja Pembayaran
+## Ringkasan API Worker
 
-1. Toko online memanggil `POST /v1/invoices` (`Authorization: Bearer <API_KEY>`) dengan `externalOrderId` dan `baseAmount`.
-2. Gateway mengalokasikan kode unik `1..499` yang bebas bentrok terhadap invoice `PENDING` aktif lain dalam jendela 15 menit, lalu men-generate `qrString` EMVCo dinamis (`Tag 01 = 12`, `Tag 54 = totalAmount`, `Tag 6304 = CRC16`).
-3. Pembeli scan QRIS → dana masuk ke rekening/merchant kamu → Android Companion App (atau MacroDroid) meneruskan notifikasi ke `POST /v1/webhook/mutation`.
-4. Gateway mencocokkan nominal persis terhadap invoice `PENDING` yang belum kedaluwarsa, mengubah status menjadi `PAID` secara atomik, dan mengirim callback bertanda tangan HMAC-SHA256 (`x-gateway-signature`) ke `callbackUrl` toko.
+- `POST /v1/invoices` (`Bearer API_KEY`) — buat invoice QRIS dinamis (`expiryMinutes`: `1`–`1440` menit / 24 jam).
+- `GET /v1/invoices/:id` (`Bearer API_KEY`) — cek status invoice + status pengiriman callback (`DELIVERED` / `PENDING` / `FAILED`).
+- `POST /v1/invoices/:id/cancel` (`Bearer API_KEY`) — batalkan invoice `PENDING` dan bebaskan slot kode unik.
+- `POST /v1/invoices/:id/retry-callback` (`Bearer API_KEY`) — retry manual callback toko.
+- `GET /v1/mutations` (`Bearer API_KEY`) — riwayat mutasi masuk dari listener.
+- `GET /v1/config/qris` & `PUT /v1/config/qris` (`Bearer API_KEY`) — baca metadata / ganti QRIS statis aktif di D1 (dengan validasi CRC16 + alert Telegram).
+- `POST /v1/webhook/mutation` (`x-gateway-secret`) — penerima notifikasi pembayaran masuk.
+- `POST /v1/device/heartbeat` (`x-gateway-secret`) & `GET /v1/device/status` (`Bearer API_KEY`).

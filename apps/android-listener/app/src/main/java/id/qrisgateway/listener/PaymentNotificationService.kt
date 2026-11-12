@@ -3,7 +3,6 @@ package id.qrisgateway.listener
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -37,12 +36,13 @@ class PaymentNotificationService : NotificationListenerService() {
         val combined = "$title $body".trim()
 
         if (combined.isBlank()) return
-        if (!combined.contains("rp", ignoreCase = true) && !combined.contains("idr", ignoreCase = true)) {
-            return
-        }
 
         val config = ConfigStore.load(applicationContext)
         if (config.allowedPackages.isNotEmpty() && !config.allowedPackages.contains(pkg.lowercase())) {
+            return
+        }
+
+        if (!matchesTextFilter(combined, config)) {
             return
         }
 
@@ -84,6 +84,39 @@ class PaymentNotificationService : NotificationListenerService() {
                     RetryWorker.enqueue(applicationContext, pkg, combined)
                     notifyBroadcastUpdate()
                 }
+            }
+        }
+    }
+
+    private fun matchesTextFilter(text: String, config: ListenerConfig): Boolean {
+        val lower = text.lowercase()
+
+        // Selalu tolak mutasi keluar bawaan
+        val outgoingKeywords = listOf(
+            "pembayaran ke",
+            "transfer keluar",
+            "pembayaran berhasil ke",
+            "anda mengirim",
+            "kamu mengirim",
+            "berhasil bayar ke"
+        )
+        if (outgoingKeywords.any { lower.contains(it) }) return false
+
+        // Terapkan exclude keywords custom bila ada
+        if (config.excludeKeywords.any { lower.contains(it) }) return false
+
+        return when (config.filterMode) {
+            FilterMode.STANDARD_RP -> {
+                lower.contains("rp") || lower.contains("idr")
+            }
+            FilterMode.ANY_NUMBER -> {
+                Regex("\\d+").containsMatchIn(lower)
+            }
+            FilterMode.CUSTOM -> {
+                val hasNumber = Regex("\\d+").containsMatchIn(lower)
+                if (!hasNumber) return false
+                if (config.includeKeywords.isEmpty()) return true
+                config.includeKeywords.any { lower.contains(it) }
             }
         }
     }

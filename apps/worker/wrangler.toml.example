@@ -13,3 +13,7 @@ ENVIRONMENT = "production"
 DEFAULT_EXPIRY_MINUTES = "15"
 UNIQUE_CODE_MIN = "1"
 UNIQUE_CODE_MAX = "499"
+OFFLINE_ALERT_MINUTES = "20"
+
+[triggers]
+crons = ["*/1 * * * *"]

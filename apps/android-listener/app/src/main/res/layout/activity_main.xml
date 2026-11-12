@@ -13,8 +13,8 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="QRIS Self-Hosted Listener"
-            android:textSize="22sp"
+            android:text="QRIS Self-Hosted Listener v0.2"
+            android:textSize="21sp"
             android:textStyle="bold"
             android:textColor="#0F172A" />
 
@@ -33,7 +33,7 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="10dp"
             android:orientation="horizontal">
 
             <Button
@@ -56,7 +56,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="14dp"
             android:text="Webhook URL (/v1/webhook/mutation)"
             android:textStyle="bold"
             android:textSize="12sp"
@@ -73,7 +73,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="8dp"
             android:text="Webhook Secret (x-gateway-secret)"
             android:textStyle="bold"
             android:textSize="12sp"
@@ -90,7 +90,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="8dp"
             android:text="Device ID"
             android:textStyle="bold"
             android:textSize="12sp"
@@ -104,37 +104,119 @@
             android:inputType="text"
             android:textSize="13sp" />
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Filter Package Name Merchant (pisahkan koma, kosong = semua yang mengandung Rp)"
-            android:textStyle="bold"
-            android:textSize="12sp"
-            android:textColor="#334155" />
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Aplikasi Merchant Dipantau"
+                android:textStyle="bold"
+                android:textSize="12sp"
+                android:textColor="#334155" />
+
+            <Button
+                android:id="@+id/btnPickApps"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Pilih App"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnClearApps"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Semua"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <EditText
             android:id="@+id/etPackages"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="com.shopee.partner.id, com.gobiz.app, id.dana"
+            android:hint="Kosong = semua app (atau klik Pilih App di atas)"
             android:inputType="textMultiLine"
             android:minLines="2"
             android:textSize="12sp" />
 
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
+            android:text="Mode Filter Teks Notifikasi"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="#334155" />
+
+        <RadioGroup
+            android:id="@+id/rgFilterMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/rbFilterStandard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Standar Pembayaran (Rp / IDR, disarankan)"
+                android:textSize="13sp" />
+
+            <RadioButton
+                android:id="@+id/rbFilterAnyNumber"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Semua Notif Mengandung Angka"
+                android:textSize="13sp" />
+
+            <RadioButton
+                android:id="@+id/rbFilterCustom"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Filter Kustom (Kata Kunci Sendiri)"
+                android:textSize="13sp" />
+        </RadioGroup>
+
+        <EditText
+            android:id="@+id/etIncludeKeywords"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Kata wajib ada (Mode Kustom, pisah koma): diterima, masuk, qris"
+            android:inputType="text"
+            android:textSize="12sp" />
+
+        <EditText
+            android:id="@+id/etExcludeKeywords"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Kata diabaikan (pisah koma): promo, cashback, diskon, voucher"
+            android:inputType="text"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Simpan Konfigurasi" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
             android:orientation="horizontal">
 
             <Button
-                android:id="@+id/btnSave"
+                android:id="@+id/btnExportConfig"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:layout_marginEnd="6dp"
-                android:text="Simpan Config" />
+                android:text="Export Config" />
 
             <Button
                 android:id="@+id/btnImportJson"
@@ -142,20 +224,36 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:layout_marginStart="6dp"
-                android:text="Import JSON" />
+                android:text="Import Config" />
         </LinearLayout>
-
-        <Button
-            android:id="@+id/btnTestPing"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Tes Koneksi Server (Heartbeat + Rp 99.999)" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnChangeQris"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="6dp"
+                android:text="Ganti QRIS" />
+
+            <Button
+                android:id="@+id/btnTestPing"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="6dp"
+                android:text="Tes Koneksi" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 

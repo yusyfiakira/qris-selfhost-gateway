@@ -4,8 +4,10 @@ import {
   parseMutationNotification,
   parseQrisMetadata,
   selectAvailableUniqueAmount,
+  verifyQrisCrc,
 } from '@qris-selfhost/core';
 import { constantTimeEqual, signCallbackPayload } from './security';
+import { escapeTelegramHtml, sendTelegramAlert } from './telegram';
 
 export interface EnvBindings {
   DB: D1Database;
@@ -18,9 +20,17 @@ export interface EnvBindings {
   DEFAULT_EXPIRY_MINUTES?: string;
   UNIQUE_CODE_MIN?: string;
   UNIQUE_CODE_MAX?: string;
+  OFFLINE_ALERT_MINUTES?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
 }
 
-const app = new Hono<{ Bindings: EnvBindings }>();
+const MAX_EXPIRY_MINUTES = 1440; // 24 jam
+const MAX_UNIQUE_CODE_LIMIT = 999;
+const CALLBACK_RETRY_DELAYS_MINUTES = [1, 2, 5, 10, 30];
+const SETTING_STATIC_QRIS = 'static_qris_string';
+
+export const app = new Hono<{ Bindings: EnvBindings }>();
 
 function extractBearer(authHeader?: string): string {
   if (!authHeader) return '';
@@ -30,7 +40,8 @@ function extractBearer(authHeader?: string): string {
 
 function requireApiAuth(c: any): Response | null {
   const configured = String(c.env?.API_KEY || '').trim();
-  const provided = extractBearer(c.req.header('Authorization')) || String(c.req.header('x-api-key') || '').trim();
+  const provided =
+    extractBearer(c.req.header('Authorization')) || String(c.req.header('x-api-key') || '').trim();
   if (!configured || !constantTimeEqual(provided, configured)) {
     return c.json({ success: false, message: 'Unauthorized API key' }, 401);
   }
@@ -73,42 +84,283 @@ function runBackground(c: any, task: () => Promise<void>) {
   return task();
 }
 
-app.get('/health', (c) => {
-  const staticQris = String(c.env?.STATIC_QRIS_STRING || '').trim();
-  let merchantName: string | undefined;
-  if (staticQris) {
+async function resolveActiveStaticQris(
+  env: EnvBindings
+): Promise<{ qrisString: string; source: 'd1' | 'env' | 'none'; updatedAt?: string }> {
+  if (env.DB) {
     try {
-      merchantName = parseQrisMetadata(staticQris).merchantName;
+      const row = await env.DB.prepare(
+        'SELECT value, updated_at FROM gateway_settings WHERE key = ? LIMIT 1'
+      )
+        .bind(SETTING_STATIC_QRIS)
+        .first<{ value: string; updated_at: string }>();
+      if (row?.value && String(row.value).trim()) {
+        return {
+          qrisString: String(row.value).trim(),
+          source: 'd1',
+          updatedAt: row.updated_at,
+        };
+      }
+    } catch {
+      // Tabel belum ada atau DB fallback ke env
+    }
+  }
+
+  const fromEnv = String(env.STATIC_QRIS_STRING || '').trim();
+  if (fromEnv) {
+    return { qrisString: fromEnv, source: 'env' };
+  }
+  return { qrisString: '', source: 'none' };
+}
+
+function getTelegramCfg(env: EnvBindings) {
+  return {
+    botToken: env.TELEGRAM_BOT_TOKEN,
+    chatId: env.TELEGRAM_CHAT_ID,
+  };
+}
+
+export async function deliverInvoiceCallback(
+  env: EnvBindings,
+  invoice: any,
+  providerHint?: string
+): Promise<{ status: 'NONE' | 'DELIVERED' | 'PENDING' | 'FAILED'; httpCode: number | null; error?: string }> {
+  const callbackUrl = String(invoice?.callback_url || '').trim();
+  if (!callbackUrl) {
+    return { status: 'NONE', httpCode: null };
+  }
+
+  const attemptsBefore = Number(invoice.callback_attempts || 0);
+  const nextAttempt = attemptsBefore + 1;
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  const payload = JSON.stringify({
+    event: 'invoice.paid',
+    invoiceId: invoice.id,
+    externalOrderId: invoice.external_order_id,
+    amount: invoice.total_amount,
+    paidAt: invoice.paid_at || nowIso,
+    providerHint: providerHint || 'unknown',
+    attempt: nextAttempt,
+  });
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const signingSecret = String(env.CALLBACK_SIGNING_SECRET || '').trim();
+  if (signingSecret) {
+    headers['x-gateway-signature'] = await signCallbackPayload(payload, signingSecret);
+  }
+
+  let httpCode: number | null = null;
+  let errorMessage: string | null = null;
+  let delivered = false;
+
+  try {
+    const res = await fetch(callbackUrl, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    httpCode = res.status;
+    if (res.ok) {
+      delivered = true;
+    } else {
+      errorMessage = `HTTP ${res.status}`;
+    }
+  } catch (err: any) {
+    errorMessage = err?.message ? String(err.message).slice(0, 240) : 'Network error';
+  }
+
+  if (delivered) {
+    await env.DB.prepare(
+      `UPDATE invoices
+       SET callback_status = 'DELIVERED',
+           callback_attempts = ?,
+           callback_http_code = ?,
+           callback_last_error = NULL,
+           callback_next_retry_at = NULL,
+           callback_delivered_at = ?
+       WHERE id = ?`
+    )
+      .bind(nextAttempt, httpCode, nowIso, invoice.id)
+      .run();
+    return { status: 'DELIVERED', httpCode };
+  }
+
+  const maxAttempts = CALLBACK_RETRY_DELAYS_MINUTES.length;
+  if (nextAttempt >= maxAttempts) {
+    await env.DB.prepare(
+      `UPDATE invoices
+       SET callback_status = 'FAILED',
+           callback_attempts = ?,
+           callback_http_code = ?,
+           callback_last_error = ?,
+           callback_next_retry_at = NULL
+       WHERE id = ?`
+    )
+      .bind(nextAttempt, httpCode, errorMessage, invoice.id)
+      .run();
+
+    await sendTelegramAlert(
+      getTelegramCfg(env),
+      `⚠️ <b>CALLBACK TOKO GAGAL PERMANEN</b>\n` +
+        `• <b>Invoice:</b> <code>${escapeTelegramHtml(invoice.id)}</code>\n` +
+        `• <b>Order Toko:</b> <code>${escapeTelegramHtml(invoice.external_order_id)}</code>\n` +
+        `• <b>Nominal:</b> Rp ${Number(invoice.total_amount).toLocaleString('id-ID')}\n` +
+        `• <b>Error:</b> ${escapeTelegramHtml(errorMessage || 'Unknown')}`
+    );
+
+    return { status: 'FAILED', httpCode, error: errorMessage || undefined };
+  }
+
+  const delayMin = CALLBACK_RETRY_DELAYS_MINUTES[nextAttempt - 1] ?? 5;
+  const nextRetryAt = new Date(now.getTime() + delayMin * 60 * 1000).toISOString();
+
+  await env.DB.prepare(
+    `UPDATE invoices
+     SET callback_status = 'PENDING',
+         callback_attempts = ?,
+         callback_http_code = ?,
+         callback_last_error = ?,
+         callback_next_retry_at = ?
+     WHERE id = ?`
+  )
+    .bind(nextAttempt, httpCode, errorMessage, nextRetryAt, invoice.id)
+    .run();
+
+  return { status: 'PENDING', httpCode, error: errorMessage || undefined };
+}
+
+app.get('/health', async (c) => {
+  const active = await resolveActiveStaticQris(c.env);
+  let merchantName: string | undefined;
+  if (active.qrisString) {
+    try {
+      merchantName = parseQrisMetadata(active.qrisString).merchantName;
     } catch {}
   }
   return c.json({
     status: 'ok',
     service: 'qris-selfhost-gateway',
     merchantName: merchantName || null,
+    qrisSource: active.source,
     timestamp: new Date().toISOString(),
   });
 });
 
 /**
- * Membuat invoice QRIS dinamis dengan kode unik bebas bentrok (1..499).
+ * Mengambil metadata QRIS statis aktif (tanpa mengekspos raw string rahasia bila tidak perlu).
+ */
+app.get('/v1/config/qris', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const active = await resolveActiveStaticQris(c.env);
+  if (!active.qrisString) {
+    return c.json({ success: true, configured: false, source: 'none', metadata: null });
+  }
+
+  let metadata = null;
+  try {
+    metadata = parseQrisMetadata(active.qrisString);
+  } catch {}
+
+  return c.json({
+    success: true,
+    configured: true,
+    source: active.source,
+    updatedAt: active.updatedAt || null,
+    metadata,
+  });
+});
+
+/**
+ * Mengganti QRIS statis aktif di D1 (wajib API_KEY, validasi CRC16 + Tag 01=11, plus Telegram alert).
+ */
+app.put('/v1/config/qris', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const body = await parseFlexibleBody(c);
+  const newQris = String(body.staticQrisString || body.qrisString || '').trim();
+  const deviceId = String(body.deviceId || 'admin-client').trim().slice(0, 64);
+
+  if (!newQris || !verifyQrisCrc(newQris)) {
+    return c.json(
+      { success: false, message: 'String QRIS tidak valid atau checksum CRC16 gagal diverifikasi' },
+      400
+    );
+  }
+
+  const newMeta = parseQrisMetadata(newQris);
+  if (newMeta.payloadFormatIndicator !== '01' || newMeta.pointOfInitiation !== '11') {
+    return c.json(
+      {
+        success: false,
+        message: 'Hanya QRIS Statis (Tag 00 = 01 dan Tag 01 = 11) yang dapat dijadikan template merchant',
+      },
+      400
+    );
+  }
+
+  const prev = await resolveActiveStaticQris(c.env);
+  let prevMerchant = '(belum diset)';
+  if (prev.qrisString) {
+    try {
+      prevMerchant = parseQrisMetadata(prev.qrisString).merchantName || '(tidak diketahui)';
+    } catch {}
+  }
+
+  const nowIso = new Date().toISOString();
+  await c.env.DB.prepare(
+    `INSERT INTO gateway_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  )
+    .bind(SETTING_STATIC_QRIS, newQris, nowIso)
+    .run();
+
+  const newMerchant = newMeta.merchantName || '(tanpa nama)';
+  await runBackground(c, () =>
+    sendTelegramAlert(
+      getTelegramCfg(c.env),
+      `🔄 <b>PERUBAHAN QRIS MERCHANT AKTIF</b>\n` +
+        `• <b>Dari:</b> ${escapeTelegramHtml(prevMerchant)}\n` +
+        `• <b>Menjadi:</b> ${escapeTelegramHtml(newMerchant)} (${escapeTelegramHtml(newMeta.merchantCity || '-')})\n` +
+        `• <b>NMID:</b> <code>${escapeTelegramHtml(newMeta.nmid || '-')}</code>\n` +
+        `• <b>Oleh:</b> <code>${escapeTelegramHtml(deviceId)}</code>`
+    ).then(() => undefined)
+  );
+
+  return c.json({
+    success: true,
+    message: 'QRIS statis aktif berhasil diperbarui',
+    source: 'd1',
+    updatedAt: nowIso,
+    metadata: newMeta,
+  });
+});
+
+/**
+ * Membuat invoice QRIS dinamis dengan durasi fleksibel (1..1440 menit) & kode unik bebas bentrok.
  */
 app.post('/v1/invoices', async (c) => {
   const authErr = requireApiAuth(c);
   if (authErr) return authErr;
 
   const db = c.env.DB;
-  const staticQris = String(c.env?.STATIC_QRIS_STRING || '').trim();
-  if (!staticQris) {
+  const activeQris = await resolveActiveStaticQris(c.env);
+  if (!activeQris.qrisString) {
     return c.json({ success: false, message: 'STATIC_QRIS_STRING is not configured' }, 500);
   }
 
   const body = await parseFlexibleBody(c);
   const externalOrderId = String(body.externalOrderId || body.orderId || '').trim();
   const baseAmount = Math.round(Number(body.baseAmount ?? body.amount ?? 0));
-  const expiryMinutes = Math.max(
-    1,
-    Math.min(120, Math.round(Number(body.expiryMinutes ?? c.env?.DEFAULT_EXPIRY_MINUTES ?? 15)))
-  );
+  const rawExpiry = Number(body.expiryMinutes ?? c.env?.DEFAULT_EXPIRY_MINUTES ?? 15);
+  const expiryMinutes = Number.isFinite(rawExpiry)
+    ? Math.max(1, Math.min(MAX_EXPIRY_MINUTES, Math.round(rawExpiry)))
+    : 15;
   const callbackUrl = String(body.callbackUrl || c.env?.DEFAULT_CALLBACK_URL || '').trim() || null;
   const metadataJson = body.metadata ? JSON.stringify(body.metadata) : null;
 
@@ -120,7 +372,10 @@ app.post('/v1/invoices', async (c) => {
   }
 
   const codeMin = Math.max(1, Number(c.env?.UNIQUE_CODE_MIN || 1));
-  const codeMax = Math.max(codeMin, Number(c.env?.UNIQUE_CODE_MAX || 499));
+  const codeMax = Math.min(
+    MAX_UNIQUE_CODE_LIMIT,
+    Math.max(codeMin, Number(c.env?.UNIQUE_CODE_MAX || 499))
+  );
 
   const now = new Date();
   const nowIso = now.toISOString();
@@ -157,12 +412,12 @@ app.post('/v1/invoices', async (c) => {
     }
 
     triedCodes.add(candidate.uniqueCode);
-    qrString = generateDynamicQris(staticQris, candidate.totalAmount);
+    qrString = generateDynamicQris(activeQris.qrisString, candidate.totalAmount);
 
     await db
       .prepare(
-        `INSERT INTO invoices (id, external_order_id, base_amount, unique_code, total_amount, qr_string, status, callback_url, metadata_json, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+        `INSERT INTO invoices (id, external_order_id, base_amount, unique_code, total_amount, qr_string, status, callback_url, callback_status, metadata_json, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            unique_code = excluded.unique_code,
            total_amount = excluded.total_amount,
@@ -176,12 +431,12 @@ app.post('/v1/invoices', async (c) => {
         candidate.totalAmount,
         qrString,
         callbackUrl,
+        callbackUrl ? 'PENDING' : 'NONE',
         metadataJson,
         expiresAt
       )
       .run();
 
-    // Race check: pastikan tidak ada invoice PENDING lain dengan total_amount identik
     const collision = await db
       .prepare(
         `SELECT id FROM invoices
@@ -213,6 +468,7 @@ app.post('/v1/invoices', async (c) => {
         totalAmount: chosen.totalAmount,
         qrString,
         status: 'PENDING',
+        expiryMinutes,
         expiresAt,
       },
     },
@@ -221,7 +477,7 @@ app.post('/v1/invoices', async (c) => {
 });
 
 /**
- * Mengambil status invoice saat ini (otomatis menandai EXPIRED bila melewati expiresAt).
+ * Mengambil detail status invoice + status pengiriman callback.
  */
 app.get('/v1/invoices/:id', async (c) => {
   const authErr = requireApiAuth(c);
@@ -237,8 +493,9 @@ app.get('/v1/invoices/:id', async (c) => {
   const nowIso = new Date().toISOString();
   let status = row.status;
   if (status === 'PENDING' && row.expires_at <= nowIso) {
-    await c.env.DB
-      .prepare(`UPDATE invoices SET status = 'EXPIRED' WHERE id = ? AND status = 'PENDING'`)
+    await c.env.DB.prepare(
+      `UPDATE invoices SET status = 'EXPIRED', callback_status = 'NONE' WHERE id = ? AND status = 'PENDING'`
+    )
       .bind(id)
       .run();
     status = 'EXPIRED';
@@ -256,12 +513,106 @@ app.get('/v1/invoices/:id', async (c) => {
       status,
       expiresAt: row.expires_at,
       paidAt: row.paid_at,
+      cancelledAt: row.cancelled_at || null,
+      callbackStatus: row.callback_status || 'NONE',
+      callbackAttempts: Number(row.callback_attempts || 0),
+      callbackHttpCode: row.callback_http_code ?? null,
+      callbackLastError: row.callback_last_error || null,
+      callbackDeliveredAt: row.callback_delivered_at || null,
     },
   });
 });
 
 /**
- * Webhook penerima mutasi dari Android Companion App / MacroDroid / Google Apps Script.
+ * Membatalkan invoice PENDING secara eksplisit agar slot kode unik langsung bebas.
+ */
+app.post('/v1/invoices/:id/cancel', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const id = c.req.param('id');
+  const existing = await c.env.DB.prepare('SELECT id, status FROM invoices WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<{ id: string; status: string }>();
+
+  if (!existing) {
+    return c.json({ success: false, message: 'Invoice not found' }, 404);
+  }
+  if (existing.status !== 'PENDING') {
+    return c.json(
+      { success: false, message: `Invoice status is ${existing.status}, cannot cancel` },
+      409
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE invoices SET status = 'CANCELLED', cancelled_at = ?, callback_status = 'NONE'
+     WHERE id = ? AND status = 'PENDING'`
+  )
+    .bind(nowIso, id)
+    .run();
+
+  return c.json({ success: true, id, status: 'CANCELLED', cancelledAt: nowIso });
+});
+
+/**
+ * Mengulang pengiriman callback ke toko secara manual untuk invoice PAID.
+ */
+app.post('/v1/invoices/:id/retry-callback', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const id = c.req.param('id');
+  const invoice = await c.env.DB.prepare('SELECT * FROM invoices WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<any>();
+
+  if (!invoice) {
+    return c.json({ success: false, message: 'Invoice not found' }, 404);
+  }
+  if (invoice.status !== 'PAID') {
+    return c.json({ success: false, message: 'Callback retry only allowed for PAID invoices' }, 409);
+  }
+  if (!invoice.callback_url) {
+    return c.json({ success: false, message: 'Invoice does not have a callbackUrl' }, 400);
+  }
+
+  const result = await deliverInvoiceCallback(c.env, invoice);
+  return c.json({
+    success: result.status === 'DELIVERED',
+    invoiceId: invoice.id,
+    callbackStatus: result.status,
+    httpCode: result.httpCode,
+    error: result.error || null,
+  });
+});
+
+/**
+ * Melihat riwayat mutasi masuk terbaru (untuk dashboard / audit).
+ */
+app.get('/v1/mutations', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const outcomeFilter = String(c.req.query('outcome') || '').trim().toUpperCase();
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') || 50)));
+
+  const rows = outcomeFilter
+    ? await c.env.DB.prepare(
+        `SELECT * FROM mutation_logs WHERE outcome = ? ORDER BY created_at DESC LIMIT ?`
+      )
+        .bind(outcomeFilter, limit)
+        .all<any>()
+    : await c.env.DB.prepare(`SELECT * FROM mutation_logs ORDER BY created_at DESC LIMIT ?`)
+        .bind(limit)
+        .all<any>();
+
+  return c.json({ success: true, mutations: rows.results || [] });
+});
+
+/**
+ * Webhook penerima mutasi dari Android Companion App / MacroDroid / GAS.
  */
 app.post('/v1/webhook/mutation', async (c) => {
   const authErr = requireWebhookAuth(c);
@@ -269,7 +620,8 @@ app.post('/v1/webhook/mutation', async (c) => {
 
   const body = await parseFlexibleBody(c);
   const parsed = parseMutationNotification(body);
-  const deviceId = String(body.deviceId || body.device_id || c.req.header('x-device-id') || '').trim() || null;
+  const deviceId =
+    String(body.deviceId || body.device_id || c.req.header('x-device-id') || '').trim() || null;
 
   if (!parsed) {
     return c.json({ status: 'error', message: 'Valid incoming IDR amount not found in payload' }, 400);
@@ -304,7 +656,15 @@ app.post('/v1/webhook/mutation', async (c) => {
         `INSERT INTO mutation_logs (id, amount, provider_hint, raw_text, matched_invoice_id, outcome, device_id)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .bind(logId, parsed.amount, parsed.providerHint, parsed.rawText || null, alreadyPaid?.id || null, outcome, deviceId)
+      .bind(
+        logId,
+        parsed.amount,
+        parsed.providerHint,
+        parsed.rawText || null,
+        alreadyPaid?.id || null,
+        outcome,
+        deviceId
+      )
       .run();
 
     return c.json({
@@ -341,37 +701,27 @@ app.post('/v1/webhook/mutation', async (c) => {
     .bind(logId, parsed.amount, parsed.providerHint, parsed.rawText || null, match.id, deviceId)
     .run();
 
-  if (match.callback_url) {
-    const callbackPayload = JSON.stringify({
-      event: 'invoice.paid',
-      invoiceId: match.id,
-      externalOrderId: match.external_order_id,
-      amount: match.total_amount,
-      paidAt: nowIso,
-      providerHint: parsed.providerHint,
-    });
+  const paidInvoice = { ...match, paid_at: nowIso, callback_attempts: 0 };
 
-    const dispatch = async () => {
-      try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-        const signingSecret = String(c.env?.CALLBACK_SIGNING_SECRET || '').trim();
-        if (signingSecret) {
-          headers['x-gateway-signature'] = await signCallbackPayload(callbackPayload, signingSecret);
-        }
-        await fetch(match.callback_url, {
-          method: 'POST',
-          headers,
-          body: callbackPayload,
-        });
-      } catch (err) {
-        console.error('Callback dispatch failed:', err);
-      }
-    };
+  await runBackground(c, async () => {
+    const cbRes = await deliverInvoiceCallback(c.env, paidInvoice, parsed.providerHint);
+    const cbLabel =
+      cbRes.status === 'NONE'
+        ? 'Tidak dikonfigurasi'
+        : cbRes.status === 'DELIVERED'
+        ? `Terkirim (HTTP ${cbRes.httpCode})`
+        : `Pending Retry (${cbRes.error || 'Error'})`;
 
-    await runBackground(c, dispatch);
-  }
+    await sendTelegramAlert(
+      getTelegramCfg(c.env),
+      `✅ <b>PEMBAYARAN QRIS LUNAS!</b>\n` +
+        `• <b>Invoice:</b> <code>${escapeTelegramHtml(match.id)}</code>\n` +
+        `• <b>Order Toko:</b> <code>${escapeTelegramHtml(match.external_order_id)}</code>\n` +
+        `• <b>Nominal:</b> Rp ${Number(parsed.amount).toLocaleString('id-ID')}\n` +
+        `• <b>Sumber:</b> ${escapeTelegramHtml(parsed.providerHint)} (${escapeTelegramHtml(deviceId || '-')})\n` +
+        `• <b>Callback Toko:</b> ${escapeTelegramHtml(cbLabel)}`
+    );
+  });
 
   return c.json({
     status: 'ok',
@@ -397,16 +747,16 @@ app.post('/v1/device/heartbeat', async (c) => {
   const networkType = String(body.networkType || '').trim().slice(0, 32) || null;
   const nowIso = new Date().toISOString();
 
-  await c.env.DB
-    .prepare(
-      `INSERT INTO device_heartbeats (device_id, app_version, battery_pct, network_type, last_seen_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(device_id) DO UPDATE SET
-         app_version = excluded.app_version,
-         battery_pct = excluded.battery_pct,
-         network_type = excluded.network_type,
-         last_seen_at = excluded.last_seen_at`
-    )
+  await c.env.DB.prepare(
+    `INSERT INTO device_heartbeats (device_id, app_version, battery_pct, network_type, last_seen_at, alerted_offline_at)
+     VALUES (?, ?, ?, ?, ?, NULL)
+     ON CONFLICT(device_id) DO UPDATE SET
+       app_version = excluded.app_version,
+       battery_pct = excluded.battery_pct,
+       network_type = excluded.network_type,
+       last_seen_at = excluded.last_seen_at,
+       alerted_offline_at = NULL`
+  )
     .bind(deviceId, appVersion, batteryPct, networkType, nowIso)
     .run();
 
@@ -417,9 +767,9 @@ app.get('/v1/device/status', async (c) => {
   const authErr = requireApiAuth(c);
   if (authErr) return authErr;
 
-  const rows = await c.env.DB
-    .prepare('SELECT * FROM device_heartbeats ORDER BY last_seen_at DESC LIMIT 10')
-    .all<any>();
+  const rows = await c.env.DB.prepare(
+    'SELECT * FROM device_heartbeats ORDER BY last_seen_at DESC LIMIT 10'
+  ).all<any>();
 
   return c.json({ success: true, devices: rows.results || [] });
 });
@@ -437,14 +787,71 @@ app.get('/v1/setup/android-config', (c) => {
     heartbeatUrl: `${baseUrl}/v1/device/heartbeat`,
     secret: c.env?.WEBHOOK_SECRET || '',
     recommendedPackages: [
-      'com.shopee.partner.id',
-      'com.gobiz.app',
+      'com.shopeepay.merchant.id',
+      'com.gojek.gopaymerchant',
+      'com.gojek.resto',
       'id.dana',
-      'com.bca.mybca.omni.android',
+      'com.bca.merchantbca',
       'id.co.bankmandiri.livinmerchant',
-      'id.co.bri.brimerchant',
+      'id.co.bri.merchant',
     ],
   });
 });
 
-export default app;
+/**
+ * Scheduled Cron Job (tiap 1 menit):
+ * 1. Auto-retry callback invoice PAID yang gagal sementara.
+ * 2. Alert Telegram bila ada device listener yang offline melewati batas menit.
+ */
+export async function runScheduledTasks(env: EnvBindings, nowMs: number = Date.now()) {
+  if (!env.DB) return;
+  const nowIso = new Date(nowMs).toISOString();
+
+  // 1. Retry pending callbacks
+  const pendingCallbacks = await env.DB.prepare(
+    `SELECT * FROM invoices
+     WHERE status = 'PAID'
+       AND callback_status = 'PENDING'
+       AND callback_url IS NOT NULL
+       AND (callback_next_retry_at IS NULL OR callback_next_retry_at <= ?)
+     LIMIT 10`
+  )
+    .bind(nowIso)
+    .all<any>();
+
+  for (const inv of pendingCallbacks.results || []) {
+    await deliverInvoiceCallback(env, inv);
+  }
+
+  // 2. Check offline listener devices
+  const offlineThresholdMin = Math.max(5, Number(env.OFFLINE_ALERT_MINUTES || 20));
+  const cutoffIso = new Date(nowMs - offlineThresholdMin * 60 * 1000).toISOString();
+
+  const offlineDevices = await env.DB.prepare(
+    `SELECT * FROM device_heartbeats
+     WHERE last_seen_at < ? AND alerted_offline_at IS NULL`
+  )
+    .bind(cutoffIso)
+    .all<any>();
+
+  for (const dev of offlineDevices.results || []) {
+    await env.DB.prepare(`UPDATE device_heartbeats SET alerted_offline_at = ? WHERE device_id = ?`)
+      .bind(nowIso, dev.device_id)
+      .run();
+
+    await sendTelegramAlert(
+      getTelegramCfg(env),
+      `📵 <b>LISTENER ANDROID OFFLINE!</b>\n` +
+        `• <b>Device:</b> <code>${escapeTelegramHtml(dev.device_id)}</code>\n` +
+        `• <b>Terakhir Aktif:</b> ${escapeTelegramHtml(dev.last_seen_at)}\n` +
+        `• <b>Baterai Terakhir:</b> ${escapeTelegramHtml(dev.battery_pct ?? '-')}% (${escapeTelegramHtml(dev.network_type || '-')})`
+    );
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: ScheduledEvent, env: EnvBindings, ctx: ExecutionContext) {
+    ctx.waitUntil(runScheduledTasks(env));
+  },
+};

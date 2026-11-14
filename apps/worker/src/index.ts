@@ -780,6 +780,60 @@ app.post('/v1/invoices/:id/cancel', async (c) => {
 });
 
 /**
+ * Menandai invoice PENDING/EXPIRED menjadi PAID secara manual dari dashboard
+ * (fallback jika pembayaran sudah masuk tapi notifikasi gagal tertangkap).
+ */
+app.post('/v1/invoices/:id/mark-paid', async (c) => {
+  const authErr = requireApiAuth(c);
+  if (authErr) return authErr;
+
+  const id = c.req.param('id');
+  const existing = await c.env.DB.prepare('SELECT * FROM invoices WHERE id = ? LIMIT 1')
+    .bind(id)
+    .first<any>();
+
+  if (!existing) {
+    return c.json({ success: false, message: 'Invoice not found' }, 404);
+  }
+  if (existing.status === 'PAID') {
+    return c.json({ success: false, message: 'Invoice is already PAID' }, 409);
+  }
+  if (existing.status === 'CANCELLED') {
+    return c.json({ success: false, message: 'Cancelled invoice cannot be marked as PAID' }, 409);
+  }
+
+  const nowIso = new Date().toISOString();
+  const updated = await c.env.DB.prepare(
+    `UPDATE invoices SET status = 'PAID', paid_at = ?
+     WHERE id = ? AND status IN ('PENDING', 'EXPIRED')`
+  )
+    .bind(nowIso, id)
+    .run();
+
+  if ((updated.meta?.changes || 0) === 0) {
+    return c.json({ success: false, message: 'Invoice status changed concurrently' }, 409);
+  }
+
+  let callbackStatus = existing.callback_url ? 'PENDING' : 'NONE';
+  if (existing.callback_url) {
+    const cbRes = await deliverInvoiceCallback(
+      c.env,
+      { ...existing, status: 'PAID', paid_at: nowIso, callback_attempts: 0 },
+      'manual_dashboard'
+    );
+    callbackStatus = cbRes.status;
+  }
+
+  return c.json({
+    success: true,
+    id,
+    status: 'PAID',
+    paidAt: nowIso,
+    callbackStatus,
+  });
+});
+
+/**
  * Mengulang pengiriman callback ke toko secara manual untuk invoice PAID.
  */
 app.post('/v1/invoices/:id/retry-callback', async (c) => {

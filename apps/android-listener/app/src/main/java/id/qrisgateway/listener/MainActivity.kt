@@ -1476,6 +1476,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun TransactionDetailDialog(item: InvoiceItem) {
+        var confirmManualPaid by remember(item.id) { mutableStateOf(false) }
+
         AlertDialog(
             onDismissRequest = { selectedInvoiceDetail = null },
             title = { Text("Detail Transaksi", fontWeight = FontWeight.Bold) },
@@ -1489,13 +1491,48 @@ class MainActivity : ComponentActivity() {
                     if (!item.paidAt.isNullOrBlank()) {
                         Text("Lunas pada: ${item.paidAt}", fontSize = 11.sp, color = StzenMuted)
                     }
+                    if (confirmManualPaid) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Konfirmasi: pastikan dana benar-benar sudah masuk sebelum menandai transaksi ini LUNAS secara manual.",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = StzenErrorFg
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { selectedInvoiceDetail = null }) { Text("Tutup") }
             },
             dismissButton = {
-                if (item.status == "PAID" && item.callbackStatus != "NONE") {
+                if (item.status == "PENDING" || item.status == "EXPIRED") {
+                    Button(
+                        onClick = {
+                            if (!confirmManualPaid) {
+                                confirmManualPaid = true
+                                return@Button
+                            }
+                            val cfg = ConfigStore.load(this)
+                            ioExecutor.execute {
+                                val (_, msg) = WebhookClient.markInvoicePaid(cfg, item.id)
+                                runOnUiThread {
+                                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                                    selectedInvoiceDetail = null
+                                    syncDashboard()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (confirmManualPaid) StzenDark else StzenEmerald
+                        )
+                    ) {
+                        Text(
+                            if (confirmManualPaid) "Ya, Konfirmasi Lunas" else "Tandai Lunas (Manual)",
+                            fontSize = 12.sp
+                        )
+                    }
+                } else if (item.status == "PAID" && item.callbackStatus != "NONE") {
                     Button(
                         onClick = {
                             val cfg = ConfigStore.load(this)

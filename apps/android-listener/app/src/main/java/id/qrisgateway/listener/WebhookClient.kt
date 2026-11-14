@@ -381,6 +381,35 @@ object WebhookClient {
         }
     }
 
+    fun markInvoicePaid(config: ListenerConfig, invoiceId: String): Pair<Boolean, String> {
+        val baseUrl = ConfigStore.deriveBaseUrl(config.webhookUrl)
+        if (baseUrl.isBlank() || config.apiKey.isBlank()) {
+            return false to "API Key belum diisi"
+        }
+        val req = Request.Builder()
+            .url("$baseUrl/v1/invoices/$invoiceId/mark-paid")
+            .addHeader("Authorization", "Bearer ${config.apiKey}")
+            .post("{}".toRequestBody(jsonMedia))
+            .build()
+
+        return try {
+            httpClient.newCall(req).execute().use { res ->
+                val raw = res.body?.string().orEmpty()
+                val json = runCatching { JSONObject(raw) }.getOrNull()
+                val ok = res.isSuccessful && (json?.optBoolean("success", false) ?: false)
+                if (ok) {
+                    val cb = json?.optString("callbackStatus", "NONE") ?: "NONE"
+                    true to "Invoice ditandai LUNAS (Callback: $cb)"
+                } else {
+                    val err = json?.optString("message").orEmpty().ifBlank { "HTTP ${res.code}" }
+                    false to "Gagal: $err"
+                }
+            }
+        } catch (e: Exception) {
+            false to (e.message ?: "Network error")
+        }
+    }
+
     fun createQuickInvoice(
         config: ListenerConfig,
         baseAmount: Long,

@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -85,12 +86,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -120,7 +123,8 @@ import java.util.concurrent.Executors
 
 data class InstalledAppItem(
     val packageName: String,
-    val label: String
+    val label: String,
+    val icon: ImageBitmap? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -262,6 +266,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        try {
+            saveFormToConfig()
+        } catch (_: Exception) {
+        }
         unregisterReceiver(logReceiver)
         super.onPause()
     }
@@ -359,7 +367,7 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "ST'ZEN QRIS PG",
+                            text = "QRIS Gateway",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = StzenDark
@@ -1269,9 +1277,11 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun AppPickerDialog() {
-        val selectedSet = mutableStateOf(
-            packagesCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
-        )
+        var selectedSet by remember(showAppPickerDialog, packagesCsv) {
+            mutableStateOf(
+                packagesCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+            )
+        }
 
         AlertDialog(
             onDismissRequest = { showAppPickerDialog = false },
@@ -1279,29 +1289,55 @@ class MainActivity : ComponentActivity() {
             text = {
                 LazyColumn(modifier = Modifier.height(340.dp)) {
                     items(installedApps, key = { it.packageName }) { app ->
-                        val isChecked = selectedSet.value.contains(app.packageName.lowercase())
+                        val isChecked = selectedSet.contains(app.packageName.lowercase())
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    val next = selectedSet.value.toMutableSet()
+                                    val next = selectedSet.toMutableSet()
                                     if (isChecked) next.remove(app.packageName.lowercase())
                                     else next.add(app.packageName.lowercase())
-                                    selectedSet.value = next
+                                    selectedSet = next
                                 }
                                 .padding(vertical = 6.dp)
                         ) {
                             Checkbox(
                                 checked = isChecked,
                                 onCheckedChange = { checked ->
-                                    val next = selectedSet.value.toMutableSet()
+                                    val next = selectedSet.toMutableSet()
                                     if (checked) next.add(app.packageName.lowercase())
                                     else next.remove(app.packageName.lowercase())
-                                    selectedSet.value = next
+                                    selectedSet = next
                                 }
                             )
-                            Column {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            if (app.icon != null) {
+                                Image(
+                                    bitmap = app.icon,
+                                    contentDescription = app.label,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            } else {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(StzenEmeraldLight)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Storefront,
+                                        contentDescription = null,
+                                        tint = StzenEmerald,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(app.label, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = StzenDark)
                                 Text(app.packageName, fontSize = 11.sp, color = StzenSubtle)
                             }
@@ -1312,7 +1348,8 @@ class MainActivity : ComponentActivity() {
             confirmButton = {
                 Button(
                     onClick = {
-                        packagesCsv = selectedSet.value.sorted().joinToString(", ")
+                        packagesCsv = selectedSet.sorted().joinToString(", ")
+                        saveFormToConfig()
                         showAppPickerDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = StzenEmerald)
@@ -1719,8 +1756,20 @@ class MainActivity : ComponentActivity() {
         for (ri in resolved) {
             val pkg = ri.activityInfo?.packageName ?: continue
             if (pkg == packageName) continue
+            if (map.containsKey(pkg)) continue
             val label = ri.loadLabel(pm).toString().trim().ifBlank { pkg }
-            map.putIfAbsent(pkg, InstalledAppItem(pkg, label))
+            val iconBitmap = try {
+                val drawable = ri.loadIcon(pm)
+                val size = 96
+                val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bmp)
+                drawable.setBounds(0, 0, size, size)
+                drawable.draw(canvas)
+                bmp.asImageBitmap()
+            } catch (_: Exception) {
+                null
+            }
+            map[pkg] = InstalledAppItem(pkg, label, iconBitmap)
         }
         return map.values.sortedBy { it.label.lowercase() }
     }

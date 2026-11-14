@@ -52,7 +52,7 @@
                             android:id="@+id/tvHomeHeaderTitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="ST'ZEN QRIS PG"
+                            android:text="QRIS Gateway"
                             android:textStyle="bold"
                             android:textSize="17sp"
                             android:textColor="#141A12" />

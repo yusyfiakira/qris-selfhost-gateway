@@ -14,6 +14,8 @@ import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
@@ -130,6 +132,15 @@ data class InstalledAppItem(
 class MainActivity : ComponentActivity() {
 
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val autoSyncHandler = Handler(Looper.getMainLooper())
+    @Volatile
+    private var isSyncInFlight = false
+    private val autoSyncRunnable = object : Runnable {
+        override fun run() {
+            syncDashboard(silent = true)
+            autoSyncHandler.postDelayed(this, 5_000L)
+        }
+    }
     private val idrFormat = NumberFormat.getInstance(Locale("id", "ID"))
 
     // Navigation & Live State
@@ -263,9 +274,12 @@ class MainActivity : ComponentActivity() {
         refreshSystemStatus()
         deliveryLogs = DeliveryLogStore.readAll(this)
         syncDashboard()
+        autoSyncHandler.removeCallbacks(autoSyncRunnable)
+        autoSyncHandler.postDelayed(autoSyncRunnable, 5_000L)
     }
 
     override fun onPause() {
+        autoSyncHandler.removeCallbacks(autoSyncRunnable)
         try {
             saveFormToConfig()
         } catch (_: Exception) {
@@ -1758,7 +1772,8 @@ class MainActivity : ComponentActivity() {
         batteryUnrestricted = pm.isIgnoringBatteryOptimizations(packageName)
     }
 
-    private fun syncDashboard() {
+    private fun syncDashboard(silent: Boolean = false) {
+        if (silent && isSyncInFlight) return
         val cfg = ConfigStore.load(this)
         if (cfg.apiKey.isBlank() || cfg.webhookUrl.isBlank()) {
             dashboardData = DashboardData(
@@ -1767,9 +1782,14 @@ class MainActivity : ComponentActivity() {
             )
             return
         }
-        isSyncing = true
+        isSyncInFlight = true
+        if (!silent) isSyncing = true
         ioExecutor.execute {
-            val data = WebhookClient.fetchDashboard(cfg, statusFilter, minAmountFilter, maxAmountFilter)
+            val data = try {
+                WebhookClient.fetchDashboard(cfg, statusFilter, minAmountFilter, maxAmountFilter)
+            } finally {
+                isSyncInFlight = false
+            }
             runOnUiThread {
                 isSyncing = false
                 dashboardData = data

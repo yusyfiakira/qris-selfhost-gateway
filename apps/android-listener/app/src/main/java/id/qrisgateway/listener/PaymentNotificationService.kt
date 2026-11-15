@@ -11,17 +11,27 @@ import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 class PaymentNotificationService : NotificationListenerService() {
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val pollScheduler = Executors.newSingleThreadScheduledExecutor()
+    private var pollFuture: ScheduledFuture<*>? = null
     private val recentFingerprints = ConcurrentHashMap<String, Long>()
 
     override fun onListenerConnected() {
         super.onListenerConnected()
         promoteForeground()
         HeartbeatWorker.schedule(applicationContext)
+        startBackgroundPolling()
         DeliveryLogStore.append(applicationContext, "🟢 Listener terhubung dan siap memantau notifikasi.")
+    }
+
+    override fun onListenerDisconnected() {
+        stopBackgroundPolling()
+        super.onListenerDisconnected()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -61,6 +71,15 @@ class PaymentNotificationService : NotificationListenerService() {
         executor.execute {
             when (val res = WebhookClient.sendMutation(config, pkg, combined)) {
                 is SendResult.Delivered -> {
+                    if (res.outcome == "MATCHED_PAID" && !res.invoiceId.isNullOrBlank()) {
+                        PaymentAlertHelper.notifyPaid(
+                            context = applicationContext,
+                            invoiceId = res.invoiceId,
+                            orderId = res.invoiceId,
+                            amount = res.amount ?: 0L,
+                            ttsEnabled = config.ttsSoundboxEnabled
+                        )
+                    }
                     val badge = when (res.outcome) {
                         "MATCHED_PAID" -> "✅ LUNAS (${res.invoiceId ?: "-"} | Rp ${res.amount ?: 0})"
                         "DUPLICATE_PAID" -> "✅ SUDAH LUNAS (${res.invoiceId ?: "-"})"
@@ -148,7 +167,34 @@ class PaymentNotificationService : NotificationListenerService() {
         }
     }
 
+    private fun startBackgroundPolling() {
+        stopBackgroundPolling()
+        pollFuture = pollScheduler.scheduleWithFixedDelay({
+            try {
+                val cfg = ConfigStore.load(applicationContext)
+                if (cfg.apiKey.isBlank() || cfg.webhookUrl.isBlank()) return@scheduleWithFixedDelay
+                val data = WebhookClient.fetchDashboard(cfg, "", null, null)
+                if (data.ok) {
+                    PaymentAlertHelper.checkAndNotifyNewPaid(
+                        context = applicationContext,
+                        items = data.items,
+                        ttsEnabled = cfg.ttsSoundboxEnabled
+                    )
+                    notifyBroadcastUpdate()
+                }
+            } catch (_: Exception) {
+            }
+        }, 10L, 10L, TimeUnit.SECONDS)
+    }
+
+    private fun stopBackgroundPolling() {
+        pollFuture?.cancel(false)
+        pollFuture = null
+    }
+
     override fun onDestroy() {
+        stopBackgroundPolling()
+        pollScheduler.shutdownNow()
         executor.shutdownNow()
         super.onDestroy()
     }

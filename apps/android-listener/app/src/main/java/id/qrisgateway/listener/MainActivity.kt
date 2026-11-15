@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -14,9 +15,11 @@ import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -69,6 +72,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -81,6 +85,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
@@ -167,11 +172,14 @@ class MainActivity : ComponentActivity() {
     private var includeKeywords by mutableStateOf("")
     private var excludeKeywords by mutableStateOf("")
     private var defaultExpiryText by mutableStateOf("15")
+    private var ttsSoundboxEnabled by mutableStateOf(true)
 
     // Modals / Bottom Sheets
     private var showFilterSheet by mutableStateOf(false)
     private var showAppPickerDialog by mutableStateOf(false)
+    private var isLoadingApps by mutableStateOf(false)
     private var installedApps by mutableStateOf<List<InstalledAppItem>>(emptyList())
+    private var cachedLauncherApps: List<InstalledAppItem>? = null
     private var showQuickQrDialog by mutableStateOf(false)
     private var generatedQrResult by mutableStateOf<QuickInvoiceResult?>(null)
     private var generatedQrBitmap by mutableStateOf<Bitmap?>(null)
@@ -807,8 +815,21 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.weight(1f)
                     )
                     TextButton(onClick = {
-                        installedApps = loadLauncherApps()
                         showAppPickerDialog = true
+                        val cached = cachedLauncherApps
+                        if (cached != null) {
+                            installedApps = cached
+                        } else {
+                            isLoadingApps = true
+                            ioExecutor.execute {
+                                val loaded = loadLauncherApps()
+                                cachedLauncherApps = loaded
+                                runOnUiThread {
+                                    installedApps = loaded
+                                    isLoadingApps = false
+                                }
+                            }
+                        }
                     }) {
                         Text("✓ Pilih App", color = StzenEmerald, fontWeight = FontWeight.Bold)
                     }
@@ -845,15 +866,15 @@ class MainActivity : ComponentActivity() {
 
             SectionLabel("Pengaturan Filter & Batas Waktu")
             RoundedCard {
-                Text("Mode Filter Notifikasi", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = StzenDark)
+                Text("Mode Deteksi Notifikasi", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = StzenDark)
                 Spacer(modifier = Modifier.height(4.dp))
-                FilterRadioRow("Standar Pembayaran (Rp / IDR)", filterMode == FilterMode.STANDARD_RP) {
+                FilterRadioRow("Deteksi Nominal Otomatis (Rp)", filterMode == FilterMode.STANDARD_RP) {
                     filterMode = FilterMode.STANDARD_RP
                 }
                 FilterRadioRow("Semua Notif Mengandung Angka", filterMode == FilterMode.ANY_NUMBER) {
                     filterMode = FilterMode.ANY_NUMBER
                 }
-                FilterRadioRow("Filter Kustom (Kata Kunci Sendiri)", filterMode == FilterMode.CUSTOM) {
+                FilterRadioRow("Filter Kata Kunci Khusus", filterMode == FilterMode.CUSTOM) {
                     filterMode = FilterMode.CUSTOM
                 }
 
@@ -897,12 +918,38 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Suara Pengumuman (Soundbox)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = StzenDark
+                        )
+                        Text(
+                            text = "Bacakan nominal otomatis saat pembayaran masuk",
+                            fontSize = 11.sp,
+                            color = StzenMuted
+                        )
+                    }
+                    Switch(
+                        checked = ttsSoundboxEnabled,
+                        onCheckedChange = {
+                            ttsSoundboxEnabled = it
+                            saveFormToConfig()
+                        }
+                    )
+                }
             }
 
-            SectionLabel("Integrasi Sistem & Webhook")
+            SectionLabel("Koneksi Server & Website Toko")
             RoundedCard {
                 RoundedInputField(
-                    label = "1. Webhook URL Worker (/v1/webhook/mutation)",
+                    label = "1. Alamat Server Gateway",
                     value = webhookUrl,
                     onValueChange = { webhookUrl = it },
                     placeholder = "https://.../v1/webhook/mutation",
@@ -910,7 +957,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 RoundedInputField(
-                    label = "2. Webhook Sukses Toko (Default Callback URL, opsional)",
+                    label = "2. Link Laporan ke Website Toko (Opsional)",
                     value = callbackUrl,
                     onValueChange = { callbackUrl = it },
                     placeholder = "https://toko-kamu.com/api/webhook/remote-qris",
@@ -918,7 +965,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 RoundedInputField(
-                    label = "3. Webhook Secret (qris_hook_...)",
+                    label = "3. Kunci Keamanan Gateway",
                     value = secret,
                     onValueChange = { secret = it },
                     placeholder = "qris_hook_...",
@@ -926,7 +973,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 RoundedInputField(
-                    label = "4. API Key Admin (qris_api_...)",
+                    label = "4. Kunci API Toko",
                     value = apiKey,
                     onValueChange = { apiKey = it },
                     placeholder = "qris_api_...",
@@ -934,7 +981,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 RoundedInputField(
-                    label = "5. Device ID",
+                    label = "5. Nama Perangkat HP",
                     value = deviceId,
                     onValueChange = { deviceId = it },
                     placeholder = "android-sm-m236b"
@@ -968,7 +1015,7 @@ class MainActivity : ComponentActivity() {
                         .fillMaxWidth()
                         .height(46.dp)
                 ) {
-                    Text("Simpan & Sync ke Worker", fontWeight = FontWeight.Bold)
+                    Text("Simpan & Hubungkan", fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -1296,64 +1343,92 @@ class MainActivity : ComponentActivity() {
                 packagesCsv.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
             )
         }
+        var searchQuery by remember(showAppPickerDialog) { mutableStateOf("") }
+        val filteredApps = remember(installedApps, searchQuery) {
+            val q = searchQuery.trim().lowercase()
+            if (q.isEmpty()) installedApps
+            else installedApps.filter {
+                it.label.lowercase().contains(q) || it.packageName.lowercase().contains(q)
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { showAppPickerDialog = false },
             title = { Text("Pilih Aplikasi Merchant", fontWeight = FontWeight.Bold) },
             text = {
-                LazyColumn(modifier = Modifier.height(340.dp)) {
-                    items(installedApps, key = { it.packageName }) { app ->
-                        val isChecked = selectedSet.contains(app.packageName.lowercase())
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                Column {
+                    RoundedInputField(
+                        label = "Cari Aplikasi",
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = "Shopee, GoPay, DANA, BCA..."
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (isLoadingApps && installedApps.isEmpty()) {
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    val next = selectedSet.toMutableSet()
-                                    if (isChecked) next.remove(app.packageName.lowercase())
-                                    else next.add(app.packageName.lowercase())
-                                    selectedSet = next
-                                }
-                                .padding(vertical = 6.dp)
+                                .height(280.dp)
                         ) {
-                            Checkbox(
-                                checked = isChecked,
-                                onCheckedChange = { checked ->
-                                    val next = selectedSet.toMutableSet()
-                                    if (checked) next.add(app.packageName.lowercase())
-                                    else next.remove(app.packageName.lowercase())
-                                    selectedSet = next
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            if (app.icon != null) {
-                                Image(
-                                    bitmap = app.icon,
-                                    contentDescription = app.label,
+                            CircularProgressIndicator(color = StzenEmerald)
+                        }
+                    } else {
+                        LazyColumn(modifier = Modifier.height(300.dp)) {
+                            items(filteredApps, key = { it.packageName }) { app ->
+                                val isChecked = selectedSet.contains(app.packageName.lowercase())
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                )
-                            } else {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(StzenEmeraldLight)
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            val next = selectedSet.toMutableSet()
+                                            if (isChecked) next.remove(app.packageName.lowercase())
+                                            else next.add(app.packageName.lowercase())
+                                            selectedSet = next
+                                        }
+                                        .padding(vertical = 6.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Storefront,
-                                        contentDescription = null,
-                                        tint = StzenEmerald,
-                                        modifier = Modifier.size(20.dp)
+                                    Checkbox(
+                                        checked = isChecked,
+                                        onCheckedChange = { checked ->
+                                            val next = selectedSet.toMutableSet()
+                                            if (checked) next.add(app.packageName.lowercase())
+                                            else next.remove(app.packageName.lowercase())
+                                            selectedSet = next
+                                        }
                                     )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    if (app.icon != null) {
+                                        Image(
+                                            bitmap = app.icon,
+                                            contentDescription = app.label,
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                        )
+                                    } else {
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(StzenEmeraldLight)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Storefront,
+                                                contentDescription = null,
+                                                tint = StzenEmerald,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(app.label, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = StzenDark)
+                                        Text(app.packageName, fontSize = 11.sp, color = StzenSubtle)
+                                    }
                                 }
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(app.label, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = StzenDark)
-                                Text(app.packageName, fontSize = 11.sp, color = StzenSubtle)
                             }
                         }
                     }
@@ -1484,6 +1559,13 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Text("Tutup")
                 }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { shareQrBitmap(bmp, res.invoiceId, res.totalAmount) }
+                ) {
+                    Text("Bagikan QR", color = StzenEmerald, fontWeight = FontWeight.Bold)
+                }
             }
         )
     }
@@ -1491,17 +1573,29 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun TransactionDetailDialog(item: InvoiceItem) {
         var confirmManualPaid by remember(item.id) { mutableStateOf(false) }
+        val statusLabel = when (item.status.uppercase()) {
+            "PAID" -> "Lunas"
+            "PENDING" -> "Menunggu Pembayaran"
+            "CANCELLED" -> "Dibatalkan"
+            else -> "Kedaluwarsa"
+        }
+        val cbLabel = when (item.callbackStatus.uppercase()) {
+            "DELIVERED" -> "Terkirim"
+            "FAILED" -> "Gagal Kirim"
+            "PENDING" -> "Menunggu Kirim"
+            else -> "Belum Diatur"
+        }
 
         AlertDialog(
             onDismissRequest = { selectedInvoiceDetail = null },
             title = { Text("Detail Transaksi", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Invoice: ${item.id}", fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                    Text("Order Toko: ${item.externalOrderId}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("ID Tagihan: ${item.id}", fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    Text("Pesanan Toko: ${item.externalOrderId}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text("Nominal: Rp ${idrFormat.format(item.totalAmount)}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = StzenEmerald)
-                    Text("Status: ${item.status}", fontSize = 12.sp)
-                    Text("Callback Toko: ${item.callbackStatus} ${item.callbackHttpCode?.let { "(HTTP $it)" } ?: ""}", fontSize = 12.sp)
+                    Text("Status: $statusLabel", fontSize = 12.sp)
+                    Text("Laporan ke Toko: $cbLabel ${item.callbackHttpCode?.let { "(HTTP $it)" } ?: ""}", fontSize = 12.sp)
                     if (!item.paidAt.isNullOrBlank()) {
                         Text("Lunas pada: ${item.paidAt}", fontSize = 11.sp, color = StzenMuted)
                     }
@@ -1542,11 +1636,11 @@ class MainActivity : ComponentActivity() {
                         )
                     ) {
                         Text(
-                            if (confirmManualPaid) "Ya, Konfirmasi Lunas" else "Tandai Lunas (Manual)",
+                            if (confirmManualPaid) "Ya, Konfirmasi Lunas" else "Konfirmasi Bayar Manual",
                             fontSize = 12.sp
                         )
                     }
-                } else if (item.status == "PAID" && item.callbackStatus != "NONE") {
+                } else if (item.status == "PAID" && (item.callbackStatus == "FAILED" || item.callbackStatus == "PENDING")) {
                     Button(
                         onClick = {
                             val cfg = ConfigStore.load(this)
@@ -1561,7 +1655,7 @@ class MainActivity : ComponentActivity() {
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = StzenEmerald)
                     ) {
-                        Text("Kirim Ulang Callback", fontSize = 12.sp)
+                        Text("Kirim Ulang Laporan Toko", fontSize = 12.sp)
                     }
                 }
             }
@@ -1745,6 +1839,7 @@ class MainActivity : ComponentActivity() {
         includeKeywords = cfg.includeKeywords.joinToString(", ")
         excludeKeywords = cfg.excludeKeywords.joinToString(", ")
         defaultExpiryText = cfg.defaultExpiryMinutes.toString()
+        ttsSoundboxEnabled = cfg.ttsSoundboxEnabled
     }
 
     private fun saveFormToConfig() {
@@ -1759,7 +1854,8 @@ class MainActivity : ComponentActivity() {
             rawExcludeKeywords = excludeKeywords,
             apiKey = apiKey,
             defaultCallbackUrl = callbackUrl,
-            defaultExpiryMinutes = defaultExpiryText.toIntOrNull() ?: 15
+            defaultExpiryMinutes = defaultExpiryText.toIntOrNull() ?: 15,
+            ttsSoundboxEnabled = ttsSoundboxEnabled
         )
     }
 
@@ -1793,8 +1889,11 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 isSyncing = false
                 dashboardData = data
-                if (data.ok && callbackUrl.isBlank() && data.callbackUrl.isNotBlank()) {
-                    callbackUrl = data.callbackUrl
+                if (data.ok) {
+                    PaymentAlertHelper.checkAndNotifyNewPaid(this, data.items, cfg.ttsSoundboxEnabled)
+                    if (callbackUrl.isBlank() && data.callbackUrl.isNotBlank()) {
+                        callbackUrl = data.callbackUrl
+                    }
                 }
             }
         }
@@ -1828,7 +1927,51 @@ class MainActivity : ComponentActivity() {
             }
             map[pkg] = InstalledAppItem(pkg, label, iconBitmap)
         }
-        return map.values.sortedBy { it.label.lowercase() }
+        val popularPackages = setOf(
+            "com.shopeepay.merchant.id",
+            "com.gojek.gopaymerchant",
+            "com.gojek.resto",
+            "id.dana",
+            "com.bca.merchantbca",
+            "id.co.bankmandiri.livinmerchant",
+            "id.co.bri.merchant",
+            "ovo.id",
+            "com.shopee.id",
+            "com.gojek.app"
+        )
+        return map.values.sortedWith(
+            compareByDescending<InstalledAppItem> { popularPackages.contains(it.packageName.lowercase()) }
+                .thenBy { it.label.lowercase() }
+        )
+    }
+
+    private fun shareQrBitmap(bmp: Bitmap, invoiceId: String, totalAmount: Long) {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "QRIS_$invoiceId.png")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/QRIS-Gateway")
+                }
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                Toast.makeText(this, "Gagal menyimpan gambar QR", Toast.LENGTH_SHORT).show()
+                return
+            }
+            contentResolver.openOutputStream(uri)?.use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TEXT, "Silakan scan QRIS berikut. Total bayar pas: Rp ${idrFormat.format(totalAmount)}")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(shareIntent, "Bagikan QRIS"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Gagal bagikan QR: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun copyToClipboard(label: String, text: String, toastMsg: String) {

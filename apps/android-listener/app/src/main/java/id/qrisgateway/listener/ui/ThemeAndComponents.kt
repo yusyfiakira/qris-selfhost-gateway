@@ -271,8 +271,14 @@ fun TransactionRowCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
+                val cbLabel = when (item.callbackStatus.uppercase()) {
+                    "DELIVERED" -> "Toko: Terkirim"
+                    "FAILED" -> "Toko: Gagal"
+                    "PENDING" -> "Toko: Menunggu"
+                    else -> "QRIS Langsung"
+                }
                 Text(
-                    text = "${item.createdAt.take(16).replace("T", " ")} • CB: ${item.callbackStatus}",
+                    text = "${item.createdAt.take(16).replace("T", " ")} • $cbLabel",
                     fontSize = 11.sp,
                     color = StzenSubtle,
                     maxLines = 1,

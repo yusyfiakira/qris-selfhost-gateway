@@ -31,7 +31,8 @@ data class ListenerConfig(
     val allowedPackages: Set<String>,
     val filterMode: FilterMode,
     val includeKeywords: List<String>,
-    val excludeKeywords: List<String>
+    val excludeKeywords: List<String>,
+    val ttsSoundboxEnabled: Boolean = true
 )
 
 object ConfigStore {
@@ -47,6 +48,7 @@ object ConfigStore {
     private const val KEY_FILTER_MODE = "filter_mode"
     private const val KEY_INCLUDE_KW = "include_keywords"
     private const val KEY_EXCLUDE_KW = "exclude_keywords"
+    private const val KEY_TTS_SOUNDBOX = "tts_soundbox_enabled"
 
     private const val DEFAULT_PACKAGES =
         "com.shopeepay.merchant.id, com.gojek.gopaymerchant, com.gojek.resto, id.dana, com.bca.merchantbca, id.co.bankmandiri.livinmerchant, id.co.bri.merchant"
@@ -89,6 +91,7 @@ object ConfigStore {
         val filterMode = FilterMode.fromId(p.getString(KEY_FILTER_MODE, FilterMode.STANDARD_RP.id))
         val rawInclude = p.getString(KEY_INCLUDE_KW, "") ?: ""
         val rawExclude = p.getString(KEY_EXCLUDE_KW, DEFAULT_EXCLUDE_KW) ?: DEFAULT_EXCLUDE_KW
+        val ttsSoundboxEnabled = p.getBoolean(KEY_TTS_SOUNDBOX, true)
 
         return ListenerConfig(
             webhookUrl = webhookUrl.trim(),
@@ -101,7 +104,8 @@ object ConfigStore {
             allowedPackages = parseCsvSet(rawPackages),
             filterMode = filterMode,
             includeKeywords = parseCsvList(rawInclude),
-            excludeKeywords = parseCsvList(rawExclude)
+            excludeKeywords = parseCsvList(rawExclude),
+            ttsSoundboxEnabled = ttsSoundboxEnabled
         )
     }
 
@@ -117,7 +121,8 @@ object ConfigStore {
         apiKey: String? = null,
         defaultCallbackUrl: String? = null,
         defaultExpiryMinutes: Int? = null,
-        explicitHeartbeatUrl: String? = null
+        explicitHeartbeatUrl: String? = null,
+        ttsSoundboxEnabled: Boolean? = null
     ) {
         val cleanWebhook = webhookUrl.trim()
         val cleanHeartbeat = explicitHeartbeatUrl?.trim()?.takeIf { it.isNotBlank() }
@@ -137,6 +142,9 @@ object ConfigStore {
         if (defaultCallbackUrl != null) editor.putString(KEY_CALLBACK_URL, defaultCallbackUrl.trim())
         if (defaultExpiryMinutes != null) {
             editor.putInt(KEY_DEFAULT_EXPIRY, defaultExpiryMinutes.coerceIn(1, 1440))
+        }
+        if (ttsSoundboxEnabled != null) {
+            editor.putBoolean(KEY_TTS_SOUNDBOX, ttsSoundboxEnabled)
         }
         editor.commit()
     }

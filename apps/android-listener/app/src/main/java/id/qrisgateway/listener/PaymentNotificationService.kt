@@ -177,7 +177,7 @@ class PaymentNotificationService : NotificationListenerService() {
                 if (data.ok) {
                     PaymentAlertHelper.checkAndNotifyNewPaid(
                         context = applicationContext,
-                        items = data.items,
+                        items = data.invoices,
                         ttsEnabled = cfg.ttsSoundboxEnabled
                     )
                     notifyBroadcastUpdate()

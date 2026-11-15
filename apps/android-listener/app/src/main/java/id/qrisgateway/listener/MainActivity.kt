@@ -1890,7 +1890,7 @@ class MainActivity : ComponentActivity() {
                 isSyncing = false
                 dashboardData = data
                 if (data.ok) {
-                    PaymentAlertHelper.checkAndNotifyNewPaid(this, data.items, cfg.ttsSoundboxEnabled)
+                    PaymentAlertHelper.checkAndNotifyNewPaid(this, data.invoices, cfg.ttsSoundboxEnabled)
                     if (callbackUrl.isBlank() && data.callbackUrl.isNotBlank()) {
                         callbackUrl = data.callbackUrl
                     }
